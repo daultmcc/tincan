@@ -1,0 +1,10 @@
+[package]
+name = "tincan-audio"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+log = "0.4.35"
+pipewire = { version = "0.10", features = ["v1_2_0"] }
+tincan-core = { version = "0.1.0", path = "../tincan-core" }
+triple_buffer = "9.0.0"

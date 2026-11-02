@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=TinCan
+GenericName=Headphone Equalizer
+Comment=Parametric EQ for headphones
+Exec=tincan
+Icon=tincan
+Terminal=false
+Categories=AudioVideo;Audio;Mixer;
+Keywords=equalizer;eq;headphones;pipewire;
+SingleMainWindow=true
