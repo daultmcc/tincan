@@ -71,6 +71,15 @@ ApplicationWindow {
         main.requestActivate();
     }
 
+    // Show every open window, the main one last so it ends up in front.
+    function showAll() {
+        for (var id in editors) {
+            editors[id].show();
+            editors[id].raise();
+        }
+        showMain();
+    }
+
     function openEditorWindow(id) {
         var w = editors[id];
         if (w) {
@@ -132,7 +141,7 @@ ApplicationWindow {
             w.refresh();
         }
         function onEditorClosed(id) { if (main.editors[id]) main.editors[id].forceClose(); }
-        function onShowRequested() { main.showMain(); }
+        function onShowRequested() { main.showAll(); }
         function onErrorOccurred(message) {
             errorDialog.message = message;
             main.showMain();
@@ -155,7 +164,7 @@ ApplicationWindow {
         tooltip: "TinCan" + (app.bypass ? " (bypassed)" : "") + (app.clipping ? " — clipping" : "")
         onActivated: (reason) => {
             if (reason === Platform.SystemTrayIcon.Trigger || reason === Platform.SystemTrayIcon.DoubleClick)
-                main.showMain();
+                main.showAll();
         }
         menu: Platform.Menu {
             Platform.MenuItem {
@@ -179,7 +188,10 @@ ApplicationWindow {
             Label { text: "Output" }
             ComboBox {
                 id: deviceBox
-                Layout.preferredWidth: 260
+                // Fills (up to 260) so it can shrink when the bar is short of room.
+                Layout.fillWidth: true
+                Layout.maximumWidth: 260
+                Layout.minimumWidth: 120
                 model: main.devices
                 textRole: "description"
                 displayText: {
@@ -207,10 +219,14 @@ ApplicationWindow {
 
             ToolSeparator {}
 
-            Switch {
-                text: "EQ active"
+            StateSwitch {
+                labels: ["EQ active", "EQ inactive"]
+                text: app.bypass ? "EQ inactive" : "EQ active"
                 checked: !app.bypass
                 onToggled: app.setGlobalBypass(!checked)
+                ToolTip.visible: hovered
+                ToolTip.delay: 800
+                ToolTip.text: "Turn the whole EQ on or off (bypassed passes audio through unchanged)"
             }
 
             ToolSeparator {}
@@ -229,6 +245,7 @@ ApplicationWindow {
             }
             NumberField {
                 Layout.preferredWidth: 90
+                Layout.minimumWidth: 90
                 kind: "gain"
                 unit: "dB"
                 value: app.preampMode === 2 ? app.manualPreampDb : app.preampDb
@@ -366,6 +383,17 @@ ApplicationWindow {
             Button {
                 text: "Manage presets…"
                 onClicked: manageDialog.open()
+            }
+            CheckBox {
+                text: "Move playing streams to TinCan"
+                checked: app.moveStreams
+                enabled: app.moveStreamsEditable
+                onToggled: app.setStreamMoving(checked)
+                ToolTip.visible: hovered
+                ToolTip.delay: 800
+                ToolTip.text: app.moveStreamsEditable
+                    ? "Also move streams onto TinCan, including ones sent to another device. Otherwise TinCan only becomes the default output."
+                    : "Set by a command-line option for this run"
             }
             Item { Layout.fillWidth: true }
             Label {

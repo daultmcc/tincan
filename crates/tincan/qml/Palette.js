@@ -1,8 +1,9 @@
 .pragma library
 
-// Filter colours, chosen to stay distinct on light and dark backgrounds.
-var filterColors = ["#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#42d4f4",
-                    "#f032e6", "#9a9a00", "#469990", "#9a6324", "#800000", "#000075"];
+// Filter colours, chosen to stay distinct on light and dark backgrounds. The first several
+// stay clear of the channel colours (blue and red, below); those hues come last.
+var filterColors = ["#3cb44b", "#f032e6", "#c09a00", "#469990", "#911eb4", "#f58231",
+                    "#42d4f4", "#9a6324", "#e6194b", "#4363d8"];
 
 function filterColor(index) {
     return filterColors[index % filterColors.length];
@@ -28,24 +29,50 @@ function clamp(v, lo, hi) {
     return Math.min(hi, Math.max(lo, v));
 }
 
-// `steps` is in wheel notches; `fine` when Shift is held.
+// The 1-2-5 series value (…, 0.1, 0.2, 0.5, 1, 2, 5, …) nearest `x` on a log scale.
+function niceIncrement(x) {
+    var p = Math.pow(10, Math.floor(Math.log10(x)));
+    var best = p;
+    [1, 2, 5, 10].forEach(function(m) {
+        if (Math.abs(Math.log(m * p / x)) < Math.abs(Math.log(best / x))) best = m * p;
+    });
+    return best;
+}
+
+// Snap `target` to a multiple of `inc`, always moving at least one increment away from
+// `value` in the direction of travel (so a notch never does nothing).
+function snapTo(value, target, inc) {
+    var r = Math.round(target / inc) * inc;
+    if (target > value && r <= value) r = (Math.floor(value / inc + 1e-9) + 1) * inc;
+    if (target < value && r >= value) r = (Math.ceil(value / inc - 1e-9) - 1) * inc;
+    return parseFloat(r.toPrecision(12));
+}
+
+// `steps` is in wheel notches; `fine` when Shift is held. Each notch moves by a roughly
+// constant ratio (frequency, Q) or amount (gain), landing on a round value: a multiple of
+// the 1-2-5 increment nearest the step size.
 function stepValue(kind, value, steps, fine) {
-    if (kind === "frequency")
-        return clamp(value * Math.pow(2, steps / (fine ? 96 : 24)), minFrequency, maxFrequency);
-    if (kind === "gain")
-        return clamp(Math.round((value + steps * (fine ? 0.01 : 0.1)) * 100) / 100, minGain, maxGain);
-    return clamp(value * Math.pow(fine ? 1.01 : 1.05, steps), minQ, maxQ);
+    if (kind === "gain") {
+        var inc = fine ? 0.01 : 0.1;
+        return clamp(snapTo(value, value + steps * inc, inc), minGain, maxGain);
+    }
+    var ratio = kind === "frequency" ? Math.pow(2, steps / (fine ? 96 : 24))
+                                     : Math.pow(fine ? 1.01 : 1.05, steps);
+    var target = value * ratio;
+    var r = snapTo(value, target, niceIncrement(Math.abs(target - value)));
+    return kind === "frequency" ? clamp(r, minFrequency, maxFrequency) : clamp(r, minQ, maxQ);
 }
 
 function formatValue(kind, v) {
     if (kind === "frequency") {
         if (v >= 1000)
             return (v / 1000).toFixed(v >= 10000 ? 2 : 3).replace(/\.?0+$/, "") + "k";
-        return v.toFixed(v >= 100 ? 0 : 1);
+        return v.toFixed(v >= 100 ? 0 : 1).replace(/\.0$/, "");
     }
     if (kind === "gain")
         return v.toFixed(2);
-    return v.toFixed(v >= 10 ? 2 : 3);
+    // Q: up to three decimals, trailing zeros dropped down to one ("0.707", "0.75", "2.0").
+    return v.toFixed(v >= 10 ? 2 : 3).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, ".0");
 }
 
 // Parses user input such as "1.2k", "6150" or "6150 Hz". Returns NaN when invalid.

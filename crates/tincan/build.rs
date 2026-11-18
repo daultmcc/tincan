@@ -8,6 +8,7 @@ fn main() {
         "qml/FilterBox.qml",
         "qml/NumberField.qml",
         "qml/ManageDialog.qml",
+        "qml/StateSwitch.qml",
     ]))
     .qt_module("Gui")
     .qt_module("Qml")

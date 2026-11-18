@@ -15,10 +15,12 @@ use std::path::Path;
 /// Prefix of the temporary ids of unsaved new presets. Slugs never contain it.
 const NEW_PREFIX: &str = "+new-";
 
-/// A filter with a runtime id, which keeps it in the same DSP slot while it is edited.
+/// A filter with a runtime id, which keeps it in the same DSP slot while it is edited, and a
+/// display color index, which stays with it when filters are reordered.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TrackedFilter {
     pub uid: u64,
+    pub color: usize,
     pub filter: Filter,
 }
 
@@ -66,6 +68,7 @@ pub struct Session {
     pub preamp_mode: PreampMode,
     pub manual_preamp_db: f64,
     pub output_device: Option<String>,
+    pub move_streams: bool,
     sample_rate: f64,
     allocator: SlotAllocator,
 }
@@ -84,6 +87,7 @@ impl Session {
             preamp_mode: state.preamp_mode,
             manual_preamp_db: state.manual_preamp_db,
             output_device: state.output_device.clone(),
+            move_streams: state.move_streams,
             sample_rate: 48_000.0,
             allocator: SlotAllocator::default(),
         };
@@ -105,6 +109,7 @@ impl Session {
         AppState {
             bypass: self.bypass,
             output_device: self.output_device.clone(),
+            move_streams: self.move_streams,
             preamp_mode: self.preamp_mode,
             manual_preamp_db: self.manual_preamp_db,
             loaded: self
@@ -131,7 +136,12 @@ impl Session {
     }
 
     fn track(&mut self, preset: Preset) -> TrackedPreset {
-        let filters = preset.filters.into_iter().map(|filter| TrackedFilter { uid: self.uid(), filter }).collect();
+        let filters = preset
+            .filters
+            .into_iter()
+            .enumerate()
+            .map(|(color, filter)| TrackedFilter { uid: self.uid(), color, filter })
+            .collect();
         TrackedPreset { name: preset.name, filters }
     }
 
@@ -292,7 +302,9 @@ impl Session {
         }
         let uid = self.uid();
         let live = self.live_mut(id)?;
-        live.filters.push(TrackedFilter { uid, filter: filter.clamped() });
+        // The lowest color no other filter in the preset uses.
+        let color = (0..).find(|c| live.filters.iter().all(|f| f.color != *c)).unwrap();
+        live.filters.push(TrackedFilter { uid, color, filter: filter.clamped() });
         Ok(live.filters.len() - 1)
     }
 
@@ -559,6 +571,21 @@ mod tests {
         assert_eq!(s.headroom().peak_db, 0.0);
         s.delete(&id).unwrap();
         assert!(s.loaded().is_empty() && !s.is_editing(&id));
+    }
+
+    #[test]
+    fn colors_follow_filters() {
+        let (_d, mut s) = setup();
+        s.open_edit("tone").unwrap();
+        s.add_filter("tone", Filter { frequency: 50.0, ..Filter::default() }).unwrap();
+        s.add_filter("tone", Filter { frequency: 5000.0, ..Filter::default() }).unwrap();
+        let colors = |s: &Session| s.live_filters("tone").iter().map(|f| f.color).collect::<Vec<_>>();
+        assert_eq!(colors(&s), vec![0, 1, 2]);
+        s.sort_filters("tone").unwrap();
+        assert_eq!(colors(&s), vec![1, 0, 2]);
+        s.remove_filter("tone", 0).unwrap();
+        s.add_filter("tone", Filter::default()).unwrap();
+        assert_eq!(colors(&s), vec![0, 2, 1]);
     }
 
     #[test]

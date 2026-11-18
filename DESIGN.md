@@ -83,7 +83,10 @@ other tools; they may be offered as an option later.
 | Gain | −24 dB – +24 dB | 0.1 dB | 0.01 dB |
 | Q | 0.1 – 40 | ×1.05 | ×1.01 |
 
-Frequency and Q step multiplicatively because both are perceived logarithmically. Frequency
+Frequency and Q step multiplicatively because both are perceived logarithmically. Each
+scroll step lands on a round value: a multiple of the 1-2-5 increment (…, 0.1, 0.2, 0.5, 1,
+2, 5, …) nearest the step size, e.g. 1 kHz → 1.02k → 1.04k → … → 1.1k → 1.15k, or Q 0.707 →
+0.75 → 0.8. Gain snaps to multiples of its step. Frequency
 input boxes accept suffixes (`1.2k`). A new filter is a stereo bell at 1 kHz, 0 dB, Q 1.0
 (or at the clicked frequency and gain, when created by double-clicking the graph). Changing
 a filter's type keeps its frequency, gain and Q.
@@ -190,11 +193,17 @@ preset; trying to open it again focuses the existing window.
 
 ## Audio routing
 
-On start, TinCan creates a stereo virtual sink named "TinCan", makes it the default sink,
-and moves all currently playing streams onto it. Its output goes to the selected output
-device. On quit, the previous default sink is restored and the streams on TinCan are moved
-to it before the sink is destroyed. (If TinCan crashes, PipeWire removes the sink and its
+On start, TinCan creates a stereo virtual sink named "TinCan" and makes it the default sink.
+Streams that follow the default sink then play through TinCan; streams the user or an
+application sent to a specific device are left alone. Its output goes to the selected output
+device. On quit, the previous default sink is restored before the sink is destroyed. (If TinCan crashes, PipeWire removes the sink and its
 session manager moves the streams to the next default sink, so audio is not lost.)
+
+Moving streams onto TinCan by force is opt-in, with the "Move playing streams to TinCan"
+setting in the main window or the `--move-streams` option (which turns it on for that run).
+When it's on, all currently playing streams are moved onto TinCan, including ones sent to
+another device, and on quit (or when the setting is turned off) the streams TinCan moved
+are returned to where they were.
 
 - Streams that are part of other virtual devices (PipeWire nodes in a `node.link-group`,
   such as filter-chain or loopback nodes) or marked `node.dont-move` are not moved.
@@ -213,12 +222,14 @@ The following are saved in the state file and restored on start:
 - Loaded presets and their order, and each one's pass-through state.
 - Global pass-through state.
 - Selected output device (by PipeWire node name).
+- Whether playing streams are moved onto TinCan.
 - Preamp mode and manual value.
 - Window sizes and positions, where the compositor allows.
 
 Autostart is left to the user (e.g. their desktop's autostart settings) for now. `tincan
 --hidden` starts without showing the main window, for use in autostart entries. `--no-route`
-leaves the default sink and existing streams alone (mainly for development).
+leaves the default sink and existing streams alone (mainly for development), and
+`--move-streams` moves streams onto TinCan for that run (see Audio routing).
 
 ## Interface
 
@@ -233,7 +244,8 @@ reached on desktops without a system tray (e.g. stock GNOME).
 
 ### Tray element
 
-Left-clicking the icon in the tray opens the main window, or focuses it if it is already open.
+Left-clicking the icon in the tray shows the main window and any open edit windows, with the
+main window in front. (Launching TinCan again while it runs does the same.)
 Right-clicking it opens a menu with two items: "Activate"/"Deactivate", to toggle
 global pass-through of the filter, and "Quit" to completely quit the application. The icon
 indicates whether TinCan is active, bypassed, or has recently clipped.
@@ -275,16 +287,22 @@ until explicitly saved (see Saved and live state).
 The interface is loosely similar to the LSP equalizer's. At the top of the window is
 the name of the open preset (marked when there are unsaved changes; double-click it to
 rename), "Save" and "Save as" buttons, and, if the preset is loaded, a pass-through toggle tied to those on the main
-window. (If the preset is not loaded the toggle is grayed out.) Underneath is a frequency
+window. (If the preset is not loaded the toggle is grayed out.) The toggle's label says
+the current state ("Active", "Inactive" or "Not loaded"), as does the main window's
+global toggle ("EQ active" or "EQ inactive"). Each toggle reserves the width of its
+longest label, so the layout doesn't shift when it changes. Underneath is a frequency
 response graph, showing both the cumulative response of this preset and the response of
 each individual filter, with separate L and R cumulative curves when they differ. Also
 corresponding to each filter is a dot representing the frequency and gain (for shelves, the
 dot sits at the full shelf gain, above or below the curve's midpoint). The dots and
-individual filter curves are color-coded. Dots can be dragged (horizontally for frequency,
+individual filter curves are color-coded. A filter keeps its color when the filters are
+reordered or sorted; a new filter takes the first color not used in the preset. The first
+few filter colors avoid the hues of the L and R curves. Dots can be dragged (horizontally for frequency,
 vertically for gain) and selected (which has the effect of highlighting the corresponding
 box at the bottom of the screen, described below). Pressing Backspace or Delete with a dot
 selected deletes the filter, and double clicking on the graph creates a new filter with a
-dot at that location. Scrolling with a filter selected changes Q. Hovering a dot enlarges it
+dot at that location. Scrolling changes Q of the hovered dot, or, with no dot hovered, of
+the selected filter. Hovering a dot enlarges it
 and adds a soft halo, as does hovering its filter's box; the selected and hovered dots are
 labelled with their filter numbers.
 

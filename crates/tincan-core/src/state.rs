@@ -23,6 +23,8 @@ pub struct AppState {
     pub bypass: bool,
     /// PipeWire node name of the selected output device.
     pub output_device: Option<String>,
+    /// Move streams onto TinCan, rather than only making it the default sink.
+    pub move_streams: bool,
     pub preamp_mode: PreampMode,
     pub manual_preamp_db: f64,
     #[serde(rename = "loaded")]
@@ -77,6 +79,7 @@ mod tests {
         let s = AppState {
             bypass: true,
             output_device: Some("alsa_output.usb".into()),
+            move_streams: true,
             preamp_mode: PreampMode::Manual,
             manual_preamp_db: -3.5,
             loaded: vec![LoadedEntry { id: "a".into(), active: false }],

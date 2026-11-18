@@ -41,6 +41,10 @@ pub mod qobject {
         #[qproperty(QString, frequencies)]
         #[qproperty(i32, sample_rate)]
         #[qproperty(bool, start_hidden)]
+        /// Whether streams are moved onto TinCan (the setting, or forced by --move-streams).
+        #[qproperty(bool, move_streams)]
+        /// Whether the move-streams setting can be changed (not with --move-streams or --no-route).
+        #[qproperty(bool, move_streams_editable)]
         /// Development aid: when set (from TINCAN_GRAB_DIR), QML renders its windows to PNGs there.
         #[qproperty(QString, grab_dir)]
         #[qproperty(i32, main_width)]
@@ -61,6 +65,8 @@ pub mod qobject {
 
         #[qinvokable]
         fn set_output(self: Pin<&mut AppController>, name: &QString);
+        #[qinvokable]
+        fn set_stream_moving(self: Pin<&mut AppController>, enabled: bool);
         #[qinvokable]
         fn set_global_bypass(self: Pin<&mut AppController>, bypass: bool);
         #[qinvokable]
@@ -176,6 +182,8 @@ pub struct AppControllerRust {
     frequencies: QString,
     sample_rate: i32,
     start_hidden: bool,
+    move_streams: bool,
+    move_streams_editable: bool,
     grab_dir: QString,
     main_width: i32,
     main_height: i32,
@@ -235,6 +243,7 @@ impl AppController {
         let state = AppState::read(&state_path);
         let (session, errors) = Session::new(PresetStore::new(presets_dir()), &state);
         let output = session.output_device.clone();
+        let move_streams = options.move_streams || session.move_streams;
         let size = |w: Option<WindowSize>, d: (i32, i32)| w.map_or(d, |w| (w.width, w.height));
         let (mw, mh) = size(state.main_window, (900, 640));
         let (ew, eh) = size(state.edit_window, (1000, 680));
@@ -243,6 +252,8 @@ impl AppController {
         self.as_mut().set_edit_width(ew);
         self.as_mut().set_edit_height(eh);
         self.as_mut().set_start_hidden(options.hidden);
+        self.as_mut().set_move_streams(move_streams && !options.no_route);
+        self.as_mut().set_move_streams_editable(!options.move_streams && !options.no_route);
         self.as_mut().set_grab_dir(qs(std::env::var("TINCAN_GRAB_DIR").unwrap_or_default()));
         let grid: Vec<f64> = frequency_grid(PLOT_POINTS).into_iter().map(round2).collect();
         self.as_mut().set_frequencies(qs(json!(grid).to_string()));
@@ -255,7 +266,7 @@ impl AppController {
         let thread = self.qt_thread();
         crate::set_show_handler(self.qt_thread());
         let params = self.as_mut().session_mut().params();
-        let config = Config { route: !options.no_route, output };
+        let config = Config { route: !options.no_route, move_streams, output };
         match Backend::start(config, &params, move |event| {
             let _ = thread.queue(move |obj| obj.on_backend_event(event));
         }) {
@@ -406,6 +417,18 @@ impl AppController {
         self.persist();
     }
 
+    pub fn set_stream_moving(mut self: Pin<&mut Self>, enabled: bool) {
+        if !*self.move_streams_editable() {
+            return;
+        }
+        self.as_mut().session_mut().move_streams = enabled;
+        self.as_mut().set_move_streams(enabled);
+        if let Some(b) = &self.core().backend {
+            b.set_move_streams(enabled);
+        }
+        self.persist();
+    }
+
     pub fn set_global_bypass(mut self: Pin<&mut Self>, bypass: bool) {
         self.as_mut().session_mut().bypass = bypass;
         self.changed();
@@ -548,6 +571,7 @@ impl AppController {
             return QString::default();
         }
         let filters: Vec<Filter> = s.live_filters(&id).iter().map(|f| f.filter).collect();
+        let colors: Vec<usize> = s.live_filters(&id).iter().map(|f| f.color).collect();
         let grid = frequency_grid(PLOT_POINTS);
         let rate = s.sample_rate();
         let left = channel_response(&filters, 0, &grid, rate);
@@ -561,6 +585,7 @@ impl AppController {
             "dirty": s.is_dirty(&id),
             "isNew": Session::is_new(&id),
             "filters": filters,
+            "colors": colors,
             "curves": { "same": left == right, "left": curve(left), "right": curve(right), "filters": individual },
         });
         qs(state.to_string())

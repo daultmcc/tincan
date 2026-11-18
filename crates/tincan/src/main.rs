@@ -13,6 +13,8 @@ use std::sync::{Mutex, OnceLock};
 pub struct Options {
     /// Don't make TinCan the default sink or move streams (for development).
     pub no_route: bool,
+    /// Move streams onto TinCan for this run, whatever the saved setting.
+    pub move_streams: bool,
     /// Start without showing the main window.
     pub hidden: bool,
 }
@@ -32,9 +34,10 @@ fn with_controller(f: impl FnOnce(std::pin::Pin<&mut AppController>) + Send + 's
 }
 
 fn usage() -> ! {
-    println!("Usage: tincan [--hidden] [--no-route]");
-    println!("  --hidden    start in the background without showing the main window");
-    println!("  --no-route  don't make TinCan the default output or move playing streams to it");
+    println!("Usage: tincan [--hidden] [--move-streams | --no-route]");
+    println!("  --hidden        start in the background without showing the main window");
+    println!("  --move-streams  also move playing streams onto TinCan, even ones sent to another device");
+    println!("  --no-route      don't make TinCan the default output or move playing streams to it");
     std::process::exit(0);
 }
 
@@ -61,6 +64,7 @@ fn main() {
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "--no-route" => options.no_route = true,
+            "--move-streams" => options.move_streams = true,
             "--hidden" => options.hidden = true,
             "-h" | "--help" => usage(),
             other => {

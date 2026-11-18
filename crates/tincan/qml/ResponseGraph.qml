@@ -9,8 +9,9 @@ Item {
     property var frequencies: []
     // { same, left, right, filters: [curve per filter] (optional) }
     property var curves: null
-    // Filters for the dots (editable mode only).
+    // Filters for the dots (editable mode only), and each one's color index.
     property var filters: []
+    property var colors: []
     property bool editable: false
     property int selectedIndex: -1
     // Dot under the mouse, and a dot highlighted from outside (its filter box is hovered).
@@ -65,6 +66,8 @@ Item {
     function fOf(x) { return 20 * Math.pow(1000, (x - leftMargin) / plotWidth); }
     function yOf(g) { return topMargin + plotHeight / 2 - g / range * plotHeight / 2; }
     function gOf(y) { return (topMargin + plotHeight / 2 - y) / (plotHeight / 2) * range; }
+
+    function colorOf(i) { return P.filterColor(colors[i] !== undefined ? colors[i] : i); }
 
     function dotAt(x, y) {
         var best = -1, bestD = 12;
@@ -152,8 +155,8 @@ Item {
                     for (var fi = 0; fi < c.filters.length; fi++) {
                         var on = root.filters[fi] && root.filters[fi].enabled;
                         var emphasis = fi === root.selectedIndex ? 2 : fi === root.highlightIndex ? 1 : 0;
-                        fill(c.filters[fi], Qt.alpha(P.filterColor(fi), on ? [0.1, 0.16, 0.22][emphasis] : 0.04));
-                        plot(c.filters[fi], Qt.alpha(P.filterColor(fi), on ? [0.5, 0.75, 0.9][emphasis] : 0.15),
+                        fill(c.filters[fi], Qt.alpha(root.colorOf(fi), on ? [0.1, 0.16, 0.22][emphasis] : 0.04));
+                        plot(c.filters[fi], Qt.alpha(root.colorOf(fi), on ? [0.5, 0.75, 0.9][emphasis] : 0.15),
                              [1.25, 1.75, 2][emphasis]);
                     }
                 if (c.same) {
@@ -187,12 +190,12 @@ Item {
                         // A soft halo marks the dot under the mouse (or whose box is hovered).
                         ctx.beginPath();
                         ctx.arc(pos[0], pos[1], 13, 0, 2 * Math.PI);
-                        ctx.fillStyle = Qt.alpha(P.filterColor(di), 0.25);
+                        ctx.fillStyle = Qt.alpha(root.colorOf(di), 0.25);
                         ctx.fill();
                     }
                     ctx.beginPath();
                     ctx.arc(pos[0], pos[1], sel ? 8 : hov ? 7.5 : 6, 0, 2 * Math.PI);
-                    ctx.fillStyle = Qt.alpha(P.filterColor(di), flt.enabled ? 1 : 0.35);
+                    ctx.fillStyle = Qt.alpha(root.colorOf(di), flt.enabled ? 1 : 0.35);
                     ctx.fill();
                     ctx.lineWidth = sel ? 2.5 : 1;
                     ctx.strokeStyle = sel ? pal.text : pal.base;
@@ -216,7 +219,7 @@ Item {
                     if (ly - 14 < root.topMargin) ly = lp[1] + 11 + 14;
                     ctx.fillStyle = Qt.alpha(pal.base, 0.85);
                     ctx.fillRect(lx, ly - 13, tw + 6, 16);
-                    ctx.fillStyle = P.filterColor(n);
+                    ctx.fillStyle = root.colorOf(n);
                     ctx.fillText(text, lx + 3, ly);
                 }
             }
@@ -278,8 +281,10 @@ Item {
             root.filterCreated(f, g);
         }
         onWheel: (wheel) => {
-            if (root.selectedIndex < 0) { wheel.accepted = false; return; }
-            root.qScrolled(root.selectedIndex, wheel.angleDelta.y / 120, (wheel.modifiers & Qt.ShiftModifier) !== 0);
+            // The hovered dot, else the selected one.
+            var i = root.hoverIndex >= 0 ? root.hoverIndex : root.selectedIndex;
+            if (i < 0) { wheel.accepted = false; return; }
+            root.qScrolled(i, wheel.angleDelta.y / 120, (wheel.modifiers & Qt.ShiftModifier) !== 0);
         }
     }
 

@@ -8,6 +8,8 @@ Frame {
     id: root
 
     property int index: 0
+    // Palette index of the filter's color, which stays with it when filters are reordered.
+    property int colorIndex: index
     property var filter: ({ type: "bell", channel: "LR", frequency: 1000, gain: 0, q: 1, enabled: true })
     property bool selected: false
     // The filter's dot is hovered on the graph.
@@ -35,8 +37,8 @@ Frame {
     background: Rectangle {
         color: root.palette.base
         border.width: root.selected || root.highlighted ? 2 : 1
-        border.color: root.selected ? P.filterColor(root.index)
-                    : root.highlighted ? Qt.alpha(P.filterColor(root.index), 0.5)
+        border.color: root.selected ? P.filterColor(root.colorIndex)
+                    : root.highlighted ? Qt.alpha(P.filterColor(root.colorIndex), 0.5)
                     : Qt.alpha(root.palette.text, 0.2)
         radius: 4
     }
@@ -60,7 +62,7 @@ Frame {
                 Layout.fillWidth: true
                 implicitHeight: 24
                 radius: 3
-                color: P.filterColor(root.index)
+                color: P.filterColor(root.colorIndex)
                 Label {
                     anchors.centerIn: parent
                     text: (root.index + 1)

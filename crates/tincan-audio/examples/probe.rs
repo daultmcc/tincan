@@ -1,4 +1,4 @@
-//! Run the backend headless: `probe [--route] [--output NODE] [--bell F,G,Q] [--seconds N]`.
+//! Run the backend headless: `probe [--route] [--move-streams] [--output NODE] [--bell F,G,Q] [--seconds N]`.
 
 use tincan_audio::{Backend, Config};
 use tincan_core::dsp::{EqParams, SlotParams};
@@ -6,13 +6,14 @@ use tincan_core::filter::{Channel, FilterType};
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let mut config = Config { route: false, output: None };
+    let mut config = Config { route: false, move_streams: false, output: None };
     let mut params = EqParams::default();
     let mut seconds = 5.0;
     let mut n = 0;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--route" => config.route = true,
+            "--move-streams" => config.move_streams = true,
             "--output" => config.output = args.next(),
             "--seconds" => seconds = args.next().unwrap().parse().unwrap(),
             "--bypass" => params.bypass = true,

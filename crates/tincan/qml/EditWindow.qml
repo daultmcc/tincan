@@ -9,7 +9,7 @@ ApplicationWindow {
 
     required property var app
     property string presetId
-    property var st: ({ name: "", loaded: false, active: false, dirty: false, isNew: false, filters: [], curves: null })
+    property var st: ({ name: "", loaded: false, active: false, dirty: false, isNew: false, filters: [], colors: [], curves: null })
     property int selectedIndex: -1
     // Filter whose box is hovered, highlighted on the graph.
     property int boxHoverIndex: -1
@@ -136,12 +136,15 @@ ApplicationWindow {
                     Keys.onEscapePressed: { cancelled = true; focus = false; visible = false; cancelled = false; }
                 }
             }
-            Switch {
-                text: "Active"
+            StateSwitch {
+                labels: ["Active", "Inactive", "Not loaded"]
+                text: !win.st.loaded ? "Not loaded" : win.st.active ? "Active" : "Inactive"
                 enabled: win.st.loaded
                 checked: win.st.loaded && win.st.active
-                ToolTip.visible: hovered && !win.st.loaded
-                ToolTip.text: "Load this preset to hear it"
+                ToolTip.visible: hovered
+                ToolTip.delay: win.st.loaded ? 800 : 0
+                ToolTip.text: win.st.loaded ? "Whether this preset is heard (also on the main window)"
+                                            : "Load this preset to hear it"
                 onToggled: app.setPresetActive(win.presetId, checked)
             }
             Button {
@@ -177,6 +180,7 @@ ApplicationWindow {
             frequencies: JSON.parse(app.frequencies)
             curves: win.st.curves
             filters: win.st.filters
+            colors: win.st.colors
             selectedIndex: win.selectedIndex
             linkedIndex: win.boxHoverIndex
             onFilterSelected: (i) => win.selectedIndex = i
@@ -243,6 +247,7 @@ ApplicationWindow {
                 required property int modelData
                 height: filterList.height - 14
                 index: modelData
+                colorIndex: win.st.colors[modelData] !== undefined ? win.st.colors[modelData] : modelData
                 filter: win.st.filters[modelData] || filter
                 selected: modelData === win.selectedIndex
                 highlighted: modelData === graph.hoverIndex

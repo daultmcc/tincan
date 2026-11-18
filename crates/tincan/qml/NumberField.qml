@@ -19,6 +19,7 @@ ColumnLayout {
     spacing: 2
 
     Label {
+        visible: root.label !== ""
         text: root.label
         font.pixelSize: 11
         opacity: 0.75

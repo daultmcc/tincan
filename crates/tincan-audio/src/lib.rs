@@ -45,14 +45,17 @@ pub enum Event {
 
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// Make TinCan the default sink and move playing streams onto it.
+    /// Make TinCan the default sink.
     pub route: bool,
+    /// Also move streams onto TinCan, including ones pinned to another device (only with `route`).
+    pub move_streams: bool,
     /// Node name of the selected output device; `None` uses the default sink at startup.
     pub output: Option<String>,
 }
 
 enum Command {
     SetOutput(Option<String>),
+    SetMoveStreams(bool),
     Quit,
 }
 
@@ -106,6 +109,11 @@ impl Backend {
         self.clipped.swap(false, Ordering::Relaxed)
     }
 
+    /// Start or stop moving streams onto TinCan. Stopping returns the streams TinCan moved.
+    pub fn set_move_streams(&self, move_streams: bool) {
+        let _ = self.commands.send(Command::SetMoveStreams(move_streams));
+    }
+
     /// Restore routing and stop.
     pub fn shutdown(mut self) {
         self.stop();
@@ -137,6 +145,7 @@ struct NodeInfo {
 /// Main-loop-side state.
 struct Inner {
     route: bool,
+    move_streams: bool,
     selected: Option<String>,
     nodes: BTreeMap<u32, NodeInfo>,
     metadata: Option<Metadata>,
@@ -228,7 +237,7 @@ impl Inner {
     }
 
     fn move_stream(&mut self, id: u32) {
-        if self.moved.contains_key(&id) || !self.should_move(id) {
+        if !self.routed || !self.move_streams || self.moved.contains_key(&id) || !self.should_move(id) {
             return;
         }
         let previous = self.meta_values.get(&(id, TARGET_KEY.to_string())).cloned();
@@ -236,7 +245,39 @@ impl Inner {
         self.set_meta(id, TARGET_KEY, Some((None, SINK_NAME.to_string())));
     }
 
-    /// Make TinCan the default sink and move playing streams onto it.
+    fn move_all_streams(&mut self) {
+        let ids: Vec<u32> = self.nodes.keys().copied().collect();
+        for id in ids {
+            self.move_stream(id);
+        }
+    }
+
+    /// Return the streams TinCan moved to their previous targets.
+    fn restore_streams(&mut self) {
+        let moved: Vec<_> = self.moved.drain().collect();
+        for (id, target) in moved {
+            // Leave streams the user has since moved elsewhere where they are.
+            let still_ours =
+                self.meta_values.get(&(id, TARGET_KEY.to_string())).is_some_and(|(_, v)| v == SINK_NAME);
+            if self.nodes.contains_key(&id) && still_ours {
+                self.set_meta(id, TARGET_KEY, target);
+            }
+        }
+    }
+
+    fn set_move_streams(&mut self, move_streams: bool) {
+        if move_streams == self.move_streams {
+            return;
+        }
+        self.move_streams = move_streams;
+        if move_streams {
+            self.move_all_streams();
+        } else {
+            self.restore_streams();
+        }
+    }
+
+    /// Make TinCan the default sink and, if enabled, move playing streams onto it.
     fn apply_routing(&mut self) {
         if !self.route || self.routed || self.metadata.is_none() || !self.nodes.values().any(|n| n.name == SINK_NAME) {
             return;
@@ -248,10 +289,7 @@ impl Inner {
             DEFAULT_SINK_KEY,
             Some((Some("Spa:String:JSON".into()), format!("{{ \"name\": \"{SINK_NAME}\" }}"))),
         );
-        let ids: Vec<u32> = self.nodes.keys().copied().collect();
-        for id in ids {
-            self.move_stream(id);
-        }
+        self.move_all_streams();
     }
 
     fn restore_routing(&mut self) {
@@ -261,15 +299,7 @@ impl Inner {
         // Restore the default first, so streams returning to "follow the default" go there.
         let previous = self.previous_default.take();
         self.set_meta(0, DEFAULT_SINK_KEY, previous);
-        let moved: Vec<_> = self.moved.drain().collect();
-        for (id, target) in moved {
-            // Leave streams the user has since moved elsewhere where they are.
-            let still_ours =
-                self.meta_values.get(&(id, TARGET_KEY.to_string())).is_some_and(|(_, v)| v == SINK_NAME);
-            if self.nodes.contains_key(&id) && still_ours {
-                self.set_meta(id, TARGET_KEY, target);
-            }
-        }
+        self.restore_streams();
         self.routed = false;
     }
 
@@ -407,6 +437,7 @@ fn run(
 
     let inner = Rc::new(RefCell::new(Inner {
         route: config.route,
+        move_streams: config.move_streams,
         selected: config.output.clone(),
         nodes: BTreeMap::new(),
         metadata: None,
@@ -548,9 +579,7 @@ fn run(
                             inner.update_output();
                             inner.apply_routing();
                         }
-                        if inner.routed {
-                            inner.move_stream(global.id);
-                        }
+                        inner.move_stream(global.id);
                     }
                 }
                 pw::types::ObjectType::Metadata => {
@@ -652,6 +681,7 @@ fn run(
             inner.selected = device;
             inner.update_output();
         }
+        Command::SetMoveStreams(move_streams) => cmd_inner.borrow_mut().set_move_streams(move_streams),
         Command::Quit => {
             cmd_inner.borrow_mut().restore_routing();
             let _ = cmd_capture.disconnect();
