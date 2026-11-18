@@ -169,6 +169,40 @@ Unknown keys are preserved where practical and otherwise ignored; a file with a 
   from the preset name; renaming a preset renames its file.
 - Application state: `$XDG_STATE_HOME/tincan/state.toml`.
 
+Other programs (such as Flatiron) may write to the presets folder while TinCan runs. TinCan
+checks the folder for changes once a second (comparing each file's modification time, size
+and inode, so atomic replacements are seen):
+
+- New, renamed and deleted files show up in the preset lists straight away.
+- A loaded or edited preset whose file changed is reloaded from it, and heard in its new
+  state; filters that only changed glide to their new settings rather than being replaced.
+  If the preset has an edit window without unsaved changes, the window follows the file. If
+  it has unsaved changes, those are kept and TinCan says so: saving will replace the file's
+  version, and closing without saving switches to it.
+- A loaded preset whose file was deleted is unloaded (from both A/B lists), and TinCan says
+  so. If it has an edit window open, the window stays, and saving writes the file again.
+- A changed file that can't be read (e.g. caught half-written by a program that doesn't
+  write atomically) is reported, and the previous version stays in use until the file
+  changes again.
+
+TinCan's own saves come back through the same check and change nothing, since the file
+matches what TinCan already has.
+
+### A/B comparison
+
+There are two loaded lists, A and B, and one of them is heard at a time. Each list has its
+own loaded presets, order, and per-preset pass-through state, but the presets themselves are
+shared: an edit to a preset loaded in both lists is heard in both. Global pass-through and
+the preamp settings are also shared (in match bypass mode the preamp is computed from the
+list being heard). Switching lists is click-free: filters only in the old list ramp out,
+filters only in the new one ramp in, and those in both stay as they are.
+
+Everything that refers to "loaded" presets (the main window's list, loading and unloading,
+the edit window's pass-through toggle, the 256-filter limit) refers to the list being heard.
+An edit is refused if it would take either list over the filter limit. Renaming, saving
+under a new name, and deleting a preset follow it in both lists; unloading removes it only
+from the current one. A new, unsaved preset is loaded in the current list only.
+
 ### Saved and live state
 
 At any given time a preset has at most two states: the **saved** configuration on disk, and
@@ -219,7 +253,8 @@ are returned to where they were.
 
 The following are saved in the state file and restored on start:
 
-- Loaded presets and their order, and each one's pass-through state.
+- Both A/B lists' loaded presets and their order, each one's pass-through state, and which
+  list is heard. (List A is stored as `loaded`, as it was before A/B existed.)
 - Global pass-through state.
 - Selected output device (by PipeWire node name).
 - Whether playing streams are moved onto TinCan.
@@ -246,9 +281,10 @@ reached on desktops without a system tray (e.g. stock GNOME).
 
 Left-clicking the icon in the tray shows the main window and any open edit windows, with the
 main window in front. (Launching TinCan again while it runs does the same.)
-Right-clicking it opens a menu with two items: "Activate"/"Deactivate", to toggle
-global pass-through of the filter, and "Quit" to completely quit the application. The icon
-indicates whether TinCan is active, bypassed, or has recently clipped.
+Right-clicking it opens a menu with three items: "Activate"/"Deactivate", to toggle
+global pass-through of the filter, "Toggle A/B", to switch between the two loaded lists, and
+"Quit" to completely quit the application. The icon indicates whether TinCan is active,
+bypassed, or has recently clipped; its tooltip names the A/B list being heard.
 
 ### Main window
 
@@ -256,11 +292,12 @@ The functions of the main window are: managing presets, toggling pass-through, s
 the output device, setting the preamp, and showing the frequency response curve of the
 combined filter.
 
-The output device selection drop down, pass-through toggle, preamp controls (mode and value),
-and headroom/clip indicators are in a bar at the top of the window. Below that is the
+The output device selection drop down, pass-through toggle, A/B selector (two buttons, "A"
+and "B", see A/B comparison), preamp controls (mode and value), and headroom/clip indicators
+are in a bar at the top of the window. Below that is the
 frequency response graph, showing the combined response of all active loaded presets
 (excluding the preamp), with separate L and R curves when they differ. Further down is a
-list of all currently loaded presets, each of which has an individual pass-through toggle
+list of all presets loaded in the current A/B list (titled e.g. "Loaded presets (A)"), each of which has an individual pass-through toggle
 and a button to unload the preset entirely. Double-clicking a preset opens it in an edit
 window. There's
 a button to add new presets which opens a drop-down, with one option to create a new
@@ -287,7 +324,7 @@ until explicitly saved (see Saved and live state).
 The interface is loosely similar to the LSP equalizer's. At the top of the window is
 the name of the open preset (marked when there are unsaved changes; double-click it to
 rename), "Save" and "Save as" buttons, and, if the preset is loaded, a pass-through toggle tied to those on the main
-window. (If the preset is not loaded the toggle is grayed out.) The toggle's label says
+window. (If the preset is not loaded in the current A/B list the toggle is grayed out.) The toggle's label says
 the current state ("Active", "Inactive" or "Not loaded"), as does the main window's
 global toggle ("EQ active" or "EQ inactive"). Each toggle reserves the width of its
 longest label, so the layout doesn't shift when it changes. Underneath is a frequency
@@ -325,4 +362,33 @@ by default a stereo bell filter.
 - L/R balance or per-channel gain.
 - A perceptual loudness model for match-bypass mode.
 - Overlaying the other loaded presets' combined response in the edit window.
+- Curve presets (see below).
+
+### Curve presets (deferred)
+
+An alternative preset type holding a frequency response curve instead of filters, so that
+Flatiron could export a correction curve directly rather than its fitted bells. Fitting
+bells to the curve inside TinCan was rejected, since it only moves Flatiron's existing step
+into TinCan. If revisited, the plan is:
+
+- **Format.** The same TOML file with `kind = "curve"` and a `[curve]` table of
+  `frequency = [...]` with `left = [...]` and `right = [...]` gains in dB (or one `gain`
+  list for both channels). Gain is interpolated linearly in log frequency and held at the
+  end values outside the given range.
+- **DSP.** A minimum-phase FIR per channel, designed from the curve by the cepstral method
+  (on a large FFT grid to avoid aliasing, with the tail tapered), about 8k–16k taps at 48
+  kHz for useful detail at 20–50 Hz, and redesigned when the sample rate changes. All active
+  curve presets are multiplied into one FIR, designed off the audio thread and handed over
+  without locking. It runs as uniformly partitioned overlap-save convolution with
+  partitions of 32–128 samples, a power of two that divides the PipeWire quantum, so no
+  latency is added beyond the quantum. Estimated cost is a few percent of a core; this
+  hasn't been measured. If the quantum is ever smaller than a partition, the partition must
+  shrink, at more CPU, or buffering adds latency.
+- **Click-free changes.** A FIR can't be ramped like a bell's gain. When the combined FIR
+  changes, the old and new ones run side by side and are crossfaded over ~20 ms.
+- **Display and preamp.** Graphs, headroom and match-bypass analysis use the designed FIR's
+  actual response, so what is shown is still what is heard.
+- **UI.** A curve preset is loaded, toggled, renamed and A/B'd like any other. Its edit
+  window is a view: the curve, the editable name, and the pass-through toggle, with no
+  filter list.
 - macOS support.

@@ -11,6 +11,35 @@ pub struct LoadedEntry {
     pub active: bool,
 }
 
+/// Which of the two loaded-preset lists is heard (DESIGN.md, A/B comparison).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AbList {
+    #[default]
+    A,
+    B,
+}
+
+impl AbList {
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
+    pub fn other(self) -> AbList {
+        match self {
+            AbList::A => AbList::B,
+            AbList::B => AbList::A,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AbList::A => "A",
+            AbList::B => "B",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WindowSize {
     pub width: i32,
@@ -27,8 +56,13 @@ pub struct AppState {
     pub move_streams: bool,
     pub preamp_mode: PreampMode,
     pub manual_preamp_db: f64,
+    /// The list being heard.
+    pub ab: AbList,
+    /// Loaded presets of list A. (Named `loaded` in the file, as before A/B existed.)
     #[serde(rename = "loaded")]
-    pub loaded: Vec<LoadedEntry>,
+    pub loaded_a: Vec<LoadedEntry>,
+    /// Loaded presets of list B.
+    pub loaded_b: Vec<LoadedEntry>,
     pub main_window: Option<WindowSize>,
     pub edit_window: Option<WindowSize>,
 }
@@ -82,13 +116,15 @@ mod tests {
             move_streams: true,
             preamp_mode: PreampMode::Manual,
             manual_preamp_db: -3.5,
-            loaded: vec![LoadedEntry { id: "a".into(), active: false }],
+            ab: AbList::B,
+            loaded_a: vec![LoadedEntry { id: "a".into(), active: false }],
+            loaded_b: vec![LoadedEntry { id: "b".into(), active: true }],
             main_window: Some(WindowSize { width: 900, height: 700 }),
             edit_window: None,
         };
         s.write(&path).unwrap();
         assert_eq!(AppState::read(&path), s);
         let partial: AppState = toml::from_str("bypass = true").unwrap();
-        assert!(partial.bypass && partial.loaded.is_empty());
+        assert!(partial.bypass && partial.loaded_a.is_empty() && partial.ab == AbList::A);
     }
 }

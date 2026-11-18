@@ -2,9 +2,11 @@
 
 use crate::filter::Filter;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 pub const FORMAT_VERSION: u32 = 1;
 
@@ -90,6 +92,14 @@ pub fn slug(name: &str) -> String {
     if out.is_empty() && !name.trim().is_empty() { "preset".to_string() } else { out }
 }
 
+/// When a preset file was last changed, as far as can be seen without reading it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileStamp {
+    modified: Option<SystemTime>,
+    len: u64,
+    inode: u64,
+}
+
 /// The directory of saved presets. Presets are identified by their file stem (the slug of
 /// their name).
 #[derive(Clone, Debug)]
@@ -138,6 +148,27 @@ impl PresetStore {
         }
         presets.sort_by_key(|(_, p)| p.name.to_lowercase());
         (presets, errors)
+    }
+
+    /// A stamp for every preset file, by id, to detect changes made by other programs.
+    pub fn stamps(&self) -> HashMap<String, FileStamp> {
+        use std::os::unix::fs::MetadataExt;
+        let mut stamps = HashMap::new();
+        let Ok(entries) = fs::read_dir(&self.dir) else {
+            return stamps;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_none_or(|e| e != "toml") {
+                continue;
+            }
+            let (Some(id), Ok(meta)) = (path.file_stem().and_then(|s| s.to_str()), fs::metadata(&path)) else {
+                continue;
+            };
+            let stamp = FileStamp { modified: meta.modified().ok(), len: meta.len(), inode: meta.ino() };
+            stamps.insert(id.to_string(), stamp);
+        }
+        stamps
     }
 
     pub fn load(&self, id: &str) -> Result<Preset, PresetError> {

@@ -161,7 +161,7 @@ ApplicationWindow {
         icon.source: app.clipping ? "qrc:/qt/qml/org/tincan/icons/tincan-clipped.svg"
                    : app.bypass ? "qrc:/qt/qml/org/tincan/icons/tincan-bypassed.svg"
                    : "qrc:/qt/qml/org/tincan/icons/tincan.svg"
-        tooltip: "TinCan" + (app.bypass ? " (bypassed)" : "") + (app.clipping ? " — clipping" : "")
+        tooltip: "TinCan" + (app.bypass ? " (bypassed)" : "") + " — " + app.abList + (app.clipping ? " — clipping" : "")
         onActivated: (reason) => {
             if (reason === Platform.SystemTrayIcon.Trigger || reason === Platform.SystemTrayIcon.DoubleClick)
                 main.showAll();
@@ -170,6 +170,10 @@ ApplicationWindow {
             Platform.MenuItem {
                 text: app.bypass ? "Activate" : "Deactivate"
                 onTriggered: app.setGlobalBypass(!app.bypass)
+            }
+            Platform.MenuItem {
+                text: "Toggle A/B"
+                onTriggered: app.toggleAb()
             }
             Platform.MenuItem {
                 text: "Quit"
@@ -227,6 +231,31 @@ ApplicationWindow {
                 ToolTip.visible: hovered
                 ToolTip.delay: 800
                 ToolTip.text: "Turn the whole EQ on or off (bypassed passes audio through unchanged)"
+            }
+
+            ToolSeparator {}
+
+            // A/B: which of the two loaded-preset lists is heard.
+            Row {
+                Repeater {
+                    model: ["A", "B"]
+                    delegate: Button {
+                        required property string modelData
+                        text: modelData
+                        implicitWidth: 34
+                        checkable: true
+                        checked: app.abList === modelData
+                        // Clicking toggles `checked`; restore the binding to the controller.
+                        onClicked: {
+                            app.setAb(modelData);
+                            checked = Qt.binding(function() { return app.abList === modelData; });
+                        }
+                        ToolTip.visible: hovered
+                        ToolTip.delay: 800
+                        ToolTip.text: "Hear loaded presets list " + modelData
+                            + ". The two lists share presets; only which are loaded and active differs."
+                    }
+                }
             }
 
             ToolSeparator {}
@@ -298,7 +327,7 @@ ApplicationWindow {
         RowLayout {
             Layout.fillWidth: true
             Label {
-                text: "Loaded presets"
+                text: "Loaded presets (" + app.abList + ")"
                 font.bold: true
                 Layout.fillWidth: true
             }

@@ -12,8 +12,8 @@ use tincan_audio::{Backend, Config, Event};
 use tincan_core::filter::Filter;
 use tincan_core::preset::PresetStore;
 use tincan_core::response::{PreampMode, channel_response, filter_response, frequency_grid};
-use tincan_core::session::Session;
-use tincan_core::state::{AppState, WindowSize, presets_dir, state_file};
+use tincan_core::session::{DiskChanges, Session};
+use tincan_core::state::{AbList, AppState, WindowSize, presets_dir, state_file};
 
 #[cxx_qt::bridge]
 pub mod qobject {
@@ -36,6 +36,8 @@ pub mod qobject {
         #[qproperty(f64, excess_db)]
         #[qproperty(bool, clipping)]
         #[qproperty(QString, loaded)]
+        /// The loaded list being heard: "A" or "B".
+        #[qproperty(QString, ab_list)]
         #[qproperty(QString, presets)]
         #[qproperty(QString, main_curves)]
         #[qproperty(QString, frequencies)]
@@ -59,7 +61,7 @@ pub mod qobject {
         /// Start the session and audio backend. Called once from QML.
         #[qinvokable]
         fn start(self: Pin<&mut AppController>);
-        /// Periodic housekeeping (clip indicator).
+        /// Periodic housekeeping (clip indicator, preset files changed on disk).
         #[qinvokable]
         fn poll(self: Pin<&mut AppController>);
 
@@ -71,6 +73,12 @@ pub mod qobject {
         fn set_global_bypass(self: Pin<&mut AppController>, bypass: bool);
         #[qinvokable]
         fn set_preamp(self: Pin<&mut AppController>, mode: i32, manual_db: f64);
+
+        /// Switch to loaded list "A" or "B".
+        #[qinvokable]
+        fn set_ab(self: Pin<&mut AppController>, list: &QString);
+        #[qinvokable]
+        fn toggle_ab(self: Pin<&mut AppController>);
 
         #[qinvokable]
         fn create_preset(self: Pin<&mut AppController>) -> QString;
@@ -157,11 +165,14 @@ use qobject::AppController;
 const PLOT_POINTS: usize = 400;
 /// How long the clip indicator stays lit.
 const CLIP_HOLD: Duration = Duration::from_secs(3);
+/// How often the presets folder is checked for changes made by other programs.
+const DISK_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
 struct Core {
     session: Session,
     backend: Option<Backend>,
     clip_until: Option<Instant>,
+    last_disk_check: Instant,
     state_path: std::path::PathBuf,
 }
 
@@ -177,6 +188,7 @@ pub struct AppControllerRust {
     excess_db: f64,
     clipping: bool,
     loaded: QString,
+    ab_list: QString,
     presets: QString,
     main_curves: QString,
     frequencies: QString,
@@ -258,7 +270,7 @@ impl AppController {
         let grid: Vec<f64> = frequency_grid(PLOT_POINTS).into_iter().map(round2).collect();
         self.as_mut().set_frequencies(qs(json!(grid).to_string()));
         unsafe { self.as_mut().rust_mut().get_unchecked_mut() }.core =
-            Some(Core { session, backend: None, clip_until: None, state_path });
+            Some(Core { session, backend: None, clip_until: None, last_disk_check: Instant::now(), state_path });
         for (id, e) in errors {
             self.as_mut().error(format!("Couldn't load preset \"{id}\": {e}"));
         }
@@ -321,8 +333,57 @@ impl AppController {
             core.clip_until = Some(now + CLIP_HOLD);
         }
         let clipping = core.clip_until.is_some_and(|t| t > now);
+        let check_disk = now.duration_since(core.last_disk_check) >= DISK_CHECK_INTERVAL;
+        if check_disk {
+            core.last_disk_check = now;
+        }
         if clipping != *self.clipping() {
-            self.set_clipping(clipping);
+            self.as_mut().set_clipping(clipping);
+        }
+        if check_disk && let Some(changes) = self.as_mut().session_mut().check_disk() {
+            self.on_disk_changes(changes);
+        }
+    }
+
+    /// Follow preset files that other programs changed (DESIGN.md, Storage).
+    fn on_disk_changes(mut self: Pin<&mut Self>, changes: DiskChanges) {
+        if !changes.removed.is_empty() || !changes.reloaded.is_empty() {
+            // Reloaded presets may be loaded in either list, so always reapply.
+            self.as_mut().changed();
+        } else {
+            self.as_mut().refresh_lists();
+        }
+        for id in &changes.reloaded {
+            self.as_mut().preset_changed(qs(id));
+        }
+        let quote = |names: &[String]| names.iter().map(|n| format!("\"{n}\"")).collect::<Vec<_>>().join(", ");
+        let was = |names: &[String]| if names.len() == 1 { "was" } else { "were" };
+        let mut messages = Vec::new();
+        let c = &changes.conflicts;
+        if !c.is_empty() {
+            messages.push(format!(
+                "{} changed on disk while you had unsaved changes. Saving will replace the version on disk; \
+                 closing without saving switches to it.",
+                quote(c)
+            ));
+        }
+        let r = &changes.removed;
+        if !r.is_empty() {
+            messages.push(format!("{} {} deleted from the presets folder and unloaded.", quote(r), was(r)));
+        }
+        let r = &changes.removed_while_editing;
+        if !r.is_empty() {
+            messages.push(format!(
+                "{} {} deleted from the presets folder while open for editing. Save to keep it.",
+                quote(r),
+                was(r)
+            ));
+        }
+        for (name, e) in &changes.errors {
+            messages.push(format!("\"{name}\" changed on disk but couldn't be read, so the previous version is still used: {e}"));
+        }
+        if !messages.is_empty() {
+            self.error(messages.join("\n\n"));
         }
     }
 
@@ -371,7 +432,9 @@ impl AppController {
             .map(|(id, p)| json!({ "id": id, "name": p.name, "loaded": s.is_loaded(id), "editing": s.is_editing(id) }))
             .collect();
         let (mode, manual) = (mode_index(s.preamp_mode), s.manual_preamp_db);
+        let ab = s.ab().label();
         self.as_mut().set_loaded(qs(Value::from(loaded).to_string()));
+        self.as_mut().set_ab_list(qs(ab));
         self.as_mut().set_presets(qs(Value::from(presets).to_string()));
         self.as_mut().set_preamp_mode(mode);
         self.as_mut().set_manual_preamp_db(manual);
@@ -441,6 +504,24 @@ impl AppController {
             s.manual_preamp_db = manual_db.clamp(-48.0, 24.0);
         }
         self.changed();
+    }
+
+    pub fn set_ab(mut self: Pin<&mut Self>, list: &QString) {
+        let list = if list.to_string() == "B" { AbList::B } else { AbList::A };
+        if list == self.core().session.ab() {
+            return;
+        }
+        self.as_mut().session_mut().set_ab(list);
+        self.as_mut().changed();
+        // Edit windows show whether their preset is loaded and active in this list.
+        for id in self.core().session.open_ids() {
+            self.as_mut().preset_changed(qs(id));
+        }
+    }
+
+    pub fn toggle_ab(self: Pin<&mut Self>) {
+        let other = self.core().session.ab().other();
+        self.set_ab(&qs(other.label()));
     }
 
     pub fn create_preset(mut self: Pin<&mut Self>) -> QString {
