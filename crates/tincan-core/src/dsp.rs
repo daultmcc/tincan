@@ -1,4 +1,5 @@
-//! Realtime processing: the filter cascade, preamp and pass-through, with parameter smoothing.
+//! Realtime processing: the filter cascade, tilt, preamp and pass-through, with parameter
+//! smoothing.
 //!
 //! The UI side describes the whole EQ as an [`EqParams`] snapshot, a fixed-size `Copy` value
 //! so it can be handed to the audio thread without allocation. Each filter occupies a slot;
@@ -7,6 +8,7 @@
 
 use crate::filter::{Channel, FilterType, clamp_frequency};
 use crate::svf::{SvfCoeffs, SvfState};
+use crate::tilt::{MAX_SECTIONS, TiltDesign};
 use std::collections::{HashMap, VecDeque};
 
 /// Maximum number of filters across all loaded presets.
@@ -43,13 +45,15 @@ impl SlotParams {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EqParams {
     pub slots: [SlotParams; MAX_SLOTS],
+    /// Combined tilt of every active preset, in dB/octave.
+    pub tilt: f64,
     pub preamp_db: f64,
     pub bypass: bool,
 }
 
 impl Default for EqParams {
     fn default() -> Self {
-        EqParams { slots: [SlotParams::INACTIVE; MAX_SLOTS], preamp_db: 0.0, bypass: false }
+        EqParams { slots: [SlotParams::INACTIVE; MAX_SLOTS], tilt: 0.0, preamp_db: 0.0, bypass: false }
     }
 }
 
@@ -119,6 +123,71 @@ impl SlotRuntime {
     };
 }
 
+/// The tilt's shelf cascade. Its slope is smoothed like a filter's gain, and the whole
+/// cascade is redesigned from the smoothed slope while it changes.
+struct TiltRuntime {
+    slope: f64,
+    design: TiltDesign,
+    coeffs: [SvfCoeffs; MAX_SECTIONS],
+    /// Coefficients at the start of the current block, when they change during it.
+    previous: Option<[SvfCoeffs; MAX_SECTIONS]>,
+    state: [[SvfState; MAX_SECTIONS]; 2],
+}
+
+impl TiltRuntime {
+    fn new(sample_rate: f64) -> TiltRuntime {
+        let mut t = TiltRuntime {
+            slope: 0.0,
+            design: TiltDesign::new(0.0, sample_rate),
+            coeffs: [SvfCoeffs::IDENTITY; MAX_SECTIONS],
+            previous: None,
+            state: [[SvfState::ZERO; MAX_SECTIONS]; 2],
+        };
+        t.update_coeffs(sample_rate);
+        t
+    }
+
+    fn update_coeffs(&mut self, sample_rate: f64) {
+        self.design = TiltDesign::new(self.slope, sample_rate);
+        for (c, s) in self.coeffs.iter_mut().zip(self.design.sections()) {
+            *c = SvfCoeffs::new(s.kind, s.frequency, s.gain, s.q, sample_rate);
+        }
+    }
+
+    fn step(&mut self, target: f64, alpha: f64, sample_rate: f64) {
+        self.previous = None;
+        if approach(&mut self.slope, target, alpha, 1e-5) {
+            let previous = self.coeffs;
+            self.update_coeffs(sample_rate);
+            self.previous = Some(previous);
+        }
+    }
+
+    fn process(&mut self, ch: usize, wet: &mut [f64]) {
+        let n = wet.len();
+        let len = self.design.sections().len();
+        let state = &mut self.state[ch][..len];
+        match self.previous {
+            Some(previous) => {
+                for ((s, c), p) in state.iter_mut().zip(&self.coeffs).zip(&previous) {
+                    for (i, w) in wet.iter_mut().enumerate() {
+                        *w = s.tick(&p.lerp(c, (i + 1) as f64 / n as f64), *w);
+                    }
+                }
+            }
+            // At zero slope every section is exactly transparent.
+            None if self.slope == 0.0 => state.iter_mut().for_each(SvfState::reset),
+            None => {
+                for (s, c) in state.iter_mut().zip(&self.coeffs) {
+                    for w in wet.iter_mut() {
+                        *w = s.tick(c, *w);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Moves `current` toward `target` by `alpha`, snapping when within `epsilon`. Returns whether
 /// it changed.
 #[inline]
@@ -139,6 +208,7 @@ pub struct Processor {
     sample_rate: f64,
     alpha: f64,
     slots: Box<[SlotRuntime; MAX_SLOTS]>,
+    tilt: Box<TiltRuntime>,
     preamp_db: f64,
     /// 1 = EQ fully applied, 0 = fully passed through.
     mix: f64,
@@ -151,6 +221,7 @@ impl Processor {
             sample_rate,
             alpha: 0.0,
             slots: Box::new([SlotRuntime::IDLE; MAX_SLOTS]),
+            tilt: Box::new(TiltRuntime::new(sample_rate)),
             preamp_db: 0.0,
             mix: 1.0,
             initialized: false,
@@ -172,6 +243,9 @@ impl Processor {
                 Self::update_coeffs(slot, sample_rate);
             }
         }
+        self.tilt.state = [[SvfState::ZERO; MAX_SECTIONS]; 2];
+        self.tilt.previous = None;
+        self.tilt.update_coeffs(sample_rate);
     }
 
     fn update_coeffs(slot: &mut SlotRuntime, sample_rate: f64) {
@@ -230,6 +304,7 @@ impl Processor {
                 rt.previous = Some(previous);
             }
         }
+        self.tilt.step(params.tilt, alpha, self.sample_rate);
         self.initialized = true;
     }
 
@@ -244,7 +319,8 @@ impl Processor {
             let end = (start + BLOCK).min(left.len());
             let n = end - start;
 
-            let pre_from = self.preamp_db;
+            // The tilt's flat gain is applied along with the preamp.
+            let pre_from = self.preamp_db + self.tilt.design.offset_db;
             let mix_from = self.mix;
             self.step_parameters(params);
             approach(&mut self.preamp_db, params.preamp_db, self.alpha, 1e-4);
@@ -255,7 +331,7 @@ impl Processor {
                 self.mix = (self.mix - fade_step).max(0.0);
             }
             let gain_from = db_to_amplitude(pre_from);
-            let gain_to = db_to_amplitude(self.preamp_db);
+            let gain_to = db_to_amplitude(self.preamp_db + self.tilt.design.offset_db);
 
             for (ch, buf) in [&mut *left, &mut *right].into_iter().enumerate() {
                 let io = &mut buf[start..end];
@@ -282,6 +358,7 @@ impl Processor {
                         None => {}
                     }
                 }
+                self.tilt.process(ch, &mut wet[..n]);
                 for slot in self.slots.iter_mut().filter(|s| s.running && s.gain[ch] == 0.0 && s.previous.is_none()) {
                     // A channel the filter doesn't apply to restarts from rest when it does.
                     slot.state[ch].reset();
@@ -302,6 +379,9 @@ impl Processor {
             for s in slot.state.iter_mut() {
                 s.flush_denormals();
             }
+        }
+        for s in self.tilt.state.iter_mut().flatten() {
+            s.flush_denormals();
         }
         peak
     }
@@ -352,6 +432,23 @@ mod tests {
     }
 
     #[test]
+    fn tilt_matches_its_design_and_glides_to_flat() {
+        let mut p = Processor::new(FS);
+        for tilt in [-1.5, 2.0] {
+            let params = EqParams { tilt, preamp_db: -1.0, ..EqParams::default() };
+            let _ = sine_gain_db(&mut p, &params, 1000.0, 0);
+            for f in [50.0, 1000.0, 8000.0] {
+                let want = crate::tilt::tilt_response(tilt, &[f], FS)[0] - 1.0;
+                assert!((sine_gain_db(&mut p, &params, f, 1) - want).abs() < 0.02, "{tilt} at {f}");
+            }
+        }
+        let params = EqParams::default();
+        let _ = sine_gain_db(&mut p, &params, 100.0, 0);
+        assert!(sine_gain_db(&mut p, &params, 100.0, 0).abs() < 1e-6);
+        assert_eq!((p.tilt.slope, p.tilt.design.offset_db), (0.0, 0.0));
+    }
+
+    #[test]
     fn bypass_is_exact_passthrough_and_removal_fades_out() {
         let mut params = EqParams::default();
         params.slots[0] = bell(1000.0, 12.0, 1.0);
@@ -382,6 +479,9 @@ mod tests {
             }
             if block == 60 {
                 params.slots[0].kind = FilterType::LowShelf;
+            }
+            if block == 80 {
+                params.tilt = -3.0;
             }
             let mut l: Vec<f32> = (0..256).map(|n| (2.0 * PI * f * (t + n) as f64 / FS).sin() as f32 * 0.1).collect();
             let mut r = l.clone();

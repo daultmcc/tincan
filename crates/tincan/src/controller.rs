@@ -14,6 +14,7 @@ use tincan_core::preset::PresetStore;
 use tincan_core::response::{PreampMode, channel_response, filter_response, frequency_grid};
 use tincan_core::session::{DiskChanges, Session};
 use tincan_core::state::{AbList, AppState, WindowSize, presets_dir, state_file};
+use tincan_core::tilt::tilt_response;
 
 #[cxx_qt::bridge]
 pub mod qobject {
@@ -117,6 +118,9 @@ pub mod qobject {
         fn move_filter(self: Pin<&mut AppController>, id: &QString, from: i32, to: i32);
         #[qinvokable]
         fn sort_filters(self: Pin<&mut AppController>, id: &QString);
+        /// Set a preset's tilt, in dB/octave.
+        #[qinvokable]
+        fn set_tilt(self: Pin<&mut AppController>, id: &QString, tilt: f64);
         /// Set the live state's name (stored on the next save). Returns false if it's refused.
         #[qinvokable]
         fn set_preset_name(self: Pin<&mut AppController>, id: &QString, name: &QString) -> bool;
@@ -398,10 +402,10 @@ impl AppController {
         let headroom = s.headroom();
         let preamp = headroom.preamp_db(s.preamp_mode, s.manual_preamp_db);
         let excess = headroom.excess_db(preamp).unwrap_or(0.0);
-        let filters = s.active_filters();
+        let (filters, tilt) = (s.active_filters(), s.active_tilt());
         let grid = frequency_grid(PLOT_POINTS);
-        let left = channel_response(&filters, 0, &grid, s.sample_rate());
-        let right = channel_response(&filters, 1, &grid, s.sample_rate());
+        let left = channel_response(&filters, tilt, 0, &grid, s.sample_rate());
+        let right = channel_response(&filters, tilt, 1, &grid, s.sample_rate());
         let curves = json!({ "same": left == right, "left": curve(left), "right": curve(right) });
         let bypass = s.bypass;
         self.as_mut().set_preamp_db(round2(preamp));
@@ -653,11 +657,13 @@ impl AppController {
         }
         let filters: Vec<Filter> = s.live_filters(&id).iter().map(|f| f.filter).collect();
         let colors: Vec<usize> = s.live_filters(&id).iter().map(|f| f.color).collect();
+        let tilt = s.live_tilt(&id);
         let grid = frequency_grid(PLOT_POINTS);
         let rate = s.sample_rate();
-        let left = channel_response(&filters, 0, &grid, rate);
-        let right = channel_response(&filters, 1, &grid, rate);
+        let left = channel_response(&filters, tilt, 0, &grid, rate);
+        let right = channel_response(&filters, tilt, 1, &grid, rate);
         let individual: Vec<Value> = filters.iter().map(|f| curve(filter_response(f, &grid, rate))).collect();
+        let tilt_curve = if tilt == 0.0 { Value::Null } else { curve(tilt_response(tilt, &grid, rate)) };
         let state = json!({
             "id": id,
             "name": s.name(&id).unwrap_or(&id),
@@ -665,9 +671,16 @@ impl AppController {
             "active": s.is_active(&id),
             "dirty": s.is_dirty(&id),
             "isNew": Session::is_new(&id),
+            "tilt": tilt,
             "filters": filters,
             "colors": colors,
-            "curves": { "same": left == right, "left": curve(left), "right": curve(right), "filters": individual },
+            "curves": {
+                "same": left == right,
+                "left": curve(left),
+                "right": curve(right),
+                "filters": individual,
+                "tilt": tilt_curve,
+            },
         });
         qs(state.to_string())
     }
@@ -725,6 +738,14 @@ impl AppController {
     pub fn sort_filters(mut self: Pin<&mut Self>, id: &QString) {
         let id = id.to_string();
         if let Err(e) = self.as_mut().session_mut().sort_filters(&id) {
+            return self.error(e);
+        }
+        self.edited(&id);
+    }
+
+    pub fn set_tilt(mut self: Pin<&mut Self>, id: &QString, tilt: f64) {
+        let id = id.to_string();
+        if let Err(e) = self.as_mut().session_mut().set_tilt(&id, tilt) {
             return self.error(e);
         }
         self.edited(&id);

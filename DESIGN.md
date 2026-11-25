@@ -75,6 +75,28 @@ function at the current rate, so what is shown is what is heard. Matched-magnitu
 (e.g. Vicanek) would reduce this rate dependence, but would break exact agreement with
 other tools; they may be offered as an option later.
 
+### Tilt
+
+Each preset also has a tilt: a constant slope in dB/octave (−3 to +3, default 0) across the
+whole band, pivoting at 1 kHz, where it leaves the level unchanged. Positive slopes rise with
+frequency. Several filters' worth of tilt in one preset serve no purpose, and it has no
+frequency or Q, so it is a single per-preset value rather than a filter type. Tilts of
+stacked presets add.
+
+No finite filter has an exactly straight response in dB over log frequency, so the tilt is
+approximated by a cascade of equal shelves one octave apart (Q 0.707), with midpoints on the
+half-octaves around 1 kHz: low shelves below it and high shelves above it, each with a gain
+of one octave's slope, from about 11 Hz up to 0.45 × the sample rate. Their transitions
+overlap into a straight line. One more high shelf at 0.45 × the sample rate (Q 0.5), scaled
+to the gap above the last regular shelf, keeps the top octave on the line, and a flat gain
+puts the pivot at exactly 0 dB. The result is within about 0.1 dB per dB/octave of slope of
+the ideal line over 20 Hz – 20 kHz at 44.1 and 48 kHz (less at higher rates), and flattens
+out below about 20 Hz. Like the filters, it is minimum phase and adds no latency.
+
+The cascade runs as state-variable filters after the filters. Its slope is smoothed like a
+filter's gain and the cascade is redesigned from the smoothed value, so changing the tilt,
+or toggling a preset that has one, glides rather than steps.
+
 ### Parameter ranges and defaults
 
 | Parameter | Range | Step (scroll) | Fine step (Shift+scroll) |
@@ -82,6 +104,7 @@ other tools; they may be offered as an option later.
 | Frequency | 20 Hz – 20 kHz, and at most 0.45 × sample rate | 1/24 octave | 1/96 octave |
 | Gain | −24 dB – +24 dB | 0.1 dB | 0.01 dB |
 | Q | 0.1 – 40 | ×1.05 | ×1.01 |
+| Tilt | −3 – +3 dB/octave | 0.1 dB/octave | 0.01 dB/octave |
 
 Frequency and Q step multiplicatively because both are perceived logarithmically. Each
 scroll step lands on a round value: a multiple of the 1-2-5 increment (…, 0.1, 0.2, 0.5, 1,
@@ -100,7 +123,8 @@ a filter's type keeps its frequency, gain and Q.
 - Filter state and coefficients are 64-bit floats; low-frequency, high-Q filters are noisy
   in 32-bit.
 - Each channel runs a cascade of every enabled filter, from every active loaded preset,
-  whose channel setting includes that channel, followed by the preamp. Cascaded filters
+  whose channel setting includes that channel, followed by the combined tilt of the active
+  presets and the preamp. Cascaded filters
   commute, so filter and preset order does not affect the sound; ordering in the UI is
   purely organizational.
 - Toggling a filter, preset, or global pass-through never switches abruptly. A filter being
@@ -139,8 +163,8 @@ In the automatic modes the computed value is shown read-only. Clipping protectio
 
 ## Presets
 
-A preset is a named, ordered list of filters. Each filter has a type, channel (L, R or LR),
-frequency, gain, Q, and enabled flag.
+A preset is a named, ordered list of filters, plus a tilt (see Tilt). Each filter has a
+type, channel (L, R or LR), frequency, gain, Q, and enabled flag.
 
 ### File format
 
@@ -150,6 +174,7 @@ format, and the one Flatiron will write.
 ```toml
 format = 1
 name = "Sundara resonances"
+tilt = -0.5            # dB/octave; omitted when 0
 
 [[filter]]
 type = "bell"          # bell | low_shelf | high_shelf
@@ -343,8 +368,8 @@ the selected filter. Hovering a dot enlarges it
 and adds a soft halo, as does hovering its filter's box; the selected and hovered dots are
 labelled with their filter numbers.
 
-The graph spans 20 Hz – 20 kHz on a log axis, with a gain axis that fits the curves but
-never shows less than ±12 dB.
+The graph spans 20 Hz – 20 kHz on a log axis. The gain axis is symmetric about 0 dB: it
+shows at least ±6 dB, and widens in 3 dB steps as needed to fit the curves and dots.
 
 Below the graph is a scrollable list of all the filters and their parameters, arranged
 horizontally. Each filter is shown as a tall, narrow box. Its top row has the filter's
@@ -353,7 +378,9 @@ button. Below are a mode drop down (Bell, High shelf, Low shelf), a channel sele
 or LR), and input boxes for frequency, gain, and Q (labelled "Sharpness (Q)"). Hovering
 these boxes and scrolling adjusts them (see Parameter ranges and defaults for step sizes). The filters can be re-arranged by dragging, and there is a
 button to sort them by frequency. There is also a button to create a new filter, which is
-by default a stereo bell filter.
+by default a stereo bell filter. Next to these buttons is an input box for the preset's
+tilt, in dB/oct, which scrolls like the filter fields. A nonzero tilt is drawn on the graph
+as a dashed line, and included in the cumulative curves.
 
 ## Possible future work
 

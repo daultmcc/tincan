@@ -9,7 +9,7 @@ ColumnLayout {
 
     property string label
     property string unit
-    // "frequency", "gain" or "q".
+    // "frequency", "gain", "q" or "tilt".
     property string kind: "gain"
     property real value: 0
     property bool readOnly: false

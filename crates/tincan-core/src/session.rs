@@ -12,6 +12,7 @@ use crate::filter::{Filter, clamp_frequency};
 use crate::preset::{FileStamp, Preset, PresetError, PresetStore, slug};
 use crate::response::{Headroom, PreampMode};
 use crate::state::{AbList, AppState, LoadedEntry};
+use crate::tilt::clamp_tilt;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -30,12 +31,13 @@ pub struct TrackedFilter {
 #[derive(Clone, Debug)]
 struct TrackedPreset {
     name: String,
+    tilt: f64,
     filters: Vec<TrackedFilter>,
 }
 
 impl TrackedPreset {
     fn to_preset(&self) -> Preset {
-        Preset { name: self.name.clone(), filters: self.filters.iter().map(|f| f.filter).collect() }
+        Preset { name: self.name.clone(), tilt: self.tilt, filters: self.filters.iter().map(|f| f.filter).collect() }
     }
 }
 
@@ -179,7 +181,7 @@ impl Session {
             .enumerate()
             .map(|(color, filter)| TrackedFilter { uid: self.uid(), color, filter })
             .collect();
-        TrackedPreset { name: preset.name, filters }
+        TrackedPreset { name: preset.name, tilt: preset.tilt, filters }
     }
 
     fn uid(&mut self) -> u64 {
@@ -370,6 +372,16 @@ impl Session {
         self.live.get(id).map_or(&[], |p| &p.filters)
     }
 
+    pub fn live_tilt(&self, id: &str) -> f64 {
+        self.live.get(id).map_or(0.0, |p| p.tilt)
+    }
+
+    /// Set the live state's tilt, in dB/octave.
+    pub fn set_tilt(&mut self, id: &str, tilt: f64) -> Result<(), SessionError> {
+        self.live_mut(id)?.tilt = clamp_tilt(tilt);
+        Ok(())
+    }
+
     fn live_mut(&mut self, id: &str) -> Result<&mut TrackedPreset, SessionError> {
         self.live.get_mut(id).ok_or(SessionError::NotEditing)
     }
@@ -471,7 +483,7 @@ impl Session {
             .find(|n| self.store.check_new_name(n).is_ok() && !taken.contains(&slug(n)))
             .unwrap();
         let id = format!("{NEW_PREFIX}{}", self.uid());
-        self.live.insert(id.clone(), TrackedPreset { name, filters: Vec::new() });
+        self.live.insert(id.clone(), TrackedPreset { name, tilt: 0.0, filters: Vec::new() });
         if let Err(e) = self.load(&id) {
             self.live.remove(&id);
             return Err(e);
@@ -592,7 +604,7 @@ impl Session {
             };
             filters.push(tracked);
         }
-        TrackedPreset { name: preset.name, filters }
+        TrackedPreset { name: preset.name, tilt: preset.tilt, filters }
     }
 
     // The resulting EQ.
@@ -608,8 +620,14 @@ impl Session {
             .collect()
     }
 
+    /// The combined tilt of every active preset, in dB/octave. Tilts add, since each is a
+    /// straight line in dB over log frequency.
+    pub fn active_tilt(&self) -> f64 {
+        self.loaded().iter().filter(|l| l.active).filter_map(|l| self.current(&l.id)).map(|p| p.tilt).sum()
+    }
+
     pub fn headroom(&self) -> Headroom {
-        Headroom::analyse(&self.active_filters(), self.sample_rate)
+        Headroom::analyse(&self.active_filters(), self.active_tilt(), self.sample_rate)
     }
 
     pub fn preamp_db(&self) -> f64 {
@@ -626,7 +644,12 @@ impl Session {
         }
         let uids: Vec<u64> = filters.iter().map(|f| f.0).collect();
         let slots = self.allocator.assign(&uids);
-        let mut params = EqParams { preamp_db: self.preamp_db(), bypass: self.bypass, ..EqParams::default() };
+        let mut params = EqParams {
+            tilt: self.active_tilt(),
+            preamp_db: self.preamp_db(),
+            bypass: self.bypass,
+            ..EqParams::default()
+        };
         for (slot, (_, active, f)) in slots.into_iter().zip(filters) {
             if let Some(slot) = slot {
                 params.slots[slot] = SlotParams {
@@ -651,7 +674,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = PresetStore::new(dir.path().to_path_buf());
         store
-            .create(&Preset { name: "Tone".into(), filters: vec![Filter { gain: 3.0, ..Filter::default() }] })
+            .create(&Preset { tilt: 0.0, name: "Tone".into(), filters: vec![Filter { gain: 3.0, ..Filter::default() }] })
             .unwrap();
         let state = AppState {
             loaded_a: vec![
@@ -683,6 +706,26 @@ mod tests {
         s.close_edit("tone");
         assert_eq!(active_slots(&s.params()), vec![3.0]);
         assert_eq!(s.store().load("tone").unwrap().filters[0].gain, 3.0);
+    }
+
+    #[test]
+    fn tilts_are_edited_saved_and_combined() {
+        let (_d, mut s) = setup();
+        s.store().create(&Preset { name: "Dark".into(), tilt: -1.0, filters: vec![] }).unwrap();
+        s.load("dark").unwrap();
+        assert_eq!(s.params().tilt, -1.0);
+        s.open_edit("tone").unwrap();
+        s.set_tilt("tone", 0.5).unwrap();
+        assert!(s.is_dirty("tone") && s.live_tilt("tone") == 0.5);
+        assert_eq!(s.params().tilt, -0.5);
+        s.set_active("dark", false);
+        assert_eq!(s.params().tilt, 0.5);
+        assert!(s.headroom().peak_db > 3.0);
+        s.save("tone").unwrap();
+        s.close_edit("tone");
+        assert_eq!(s.store().load("tone").unwrap().tilt, 0.5);
+        assert_eq!(s.params().tilt, 0.5);
+        assert!(matches!(s.set_tilt("tone", 1.0), Err(SessionError::NotEditing)));
     }
 
     #[test]
@@ -784,7 +827,7 @@ mod tests {
     #[test]
     fn ab_lists_share_presets() {
         let (_d, mut s) = setup();
-        s.store().create(&Preset { name: "Bass".into(), filters: vec![Filter { gain: 6.0, ..Filter::default() }] }).unwrap();
+        s.store().create(&Preset { tilt: 0.0, name: "Bass".into(), filters: vec![Filter { gain: 6.0, ..Filter::default() }] }).unwrap();
         assert_eq!(s.ab(), AbList::A);
         s.set_ab(AbList::B);
         assert!(s.loaded().is_empty() && active_slots(&s.params()).is_empty());
@@ -836,9 +879,9 @@ mod tests {
 
         // Another program adds a preset and rewrites a loaded one.
         let other = PresetStore::new(s.store().dir().to_path_buf());
-        other.create(&Preset { name: "Flatiron".into(), filters: vec![] }).unwrap();
+        other.create(&Preset { tilt: 0.0, name: "Flatiron".into(), filters: vec![] }).unwrap();
         let two = vec![Filter { gain: 2.0, ..Filter::default() }, Filter { gain: 1.0, ..Filter::default() }];
-        other.save("tone", &Preset { name: "Tone".into(), filters: two }).unwrap();
+        other.save("tone", &Preset { tilt: 0.0, name: "Tone".into(), filters: two }).unwrap();
         let c = s.check_disk().unwrap();
         assert_eq!(c.reloaded, vec!["tone".to_string()]);
         let p = s.params();
@@ -848,12 +891,12 @@ mod tests {
 
         // An open window without unsaved changes follows the file; one with them keeps them.
         s.open_edit("tone").unwrap();
-        other.save("tone", &Preset { name: "Tone".into(), filters: vec![Filter { gain: 4.0, ..Filter::default() }] }).unwrap();
+        other.save("tone", &Preset { tilt: 0.0, name: "Tone".into(), filters: vec![Filter { gain: 4.0, ..Filter::default() }] }).unwrap();
         let c = s.check_disk().unwrap();
         assert!(c.conflicts.is_empty());
         assert_eq!(s.live_filters("tone")[0].filter.gain, 4.0);
         s.update_filter("tone", 0, Filter { gain: -3.0, ..Filter::default() }).unwrap();
-        other.save("tone", &Preset { name: "Tone".into(), filters: vec![Filter { gain: 5.0, ..Filter::default() }] }).unwrap();
+        other.save("tone", &Preset { tilt: 0.0, name: "Tone".into(), filters: vec![Filter { gain: 5.0, ..Filter::default() }] }).unwrap();
         let c = s.check_disk().unwrap();
         assert_eq!(c.conflicts, vec!["Tone".to_string()]);
         assert_eq!(active_slots(&s.params()), vec![-3.0]);

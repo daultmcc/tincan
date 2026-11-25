@@ -1,6 +1,7 @@
 //! Presets and their TOML file format (DESIGN.md, Presets).
 
 use crate::filter::Filter;
+use crate::tilt::clamp_tilt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -13,6 +14,8 @@ pub const FORMAT_VERSION: u32 = 1;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Preset {
     pub name: String,
+    /// Spectral tilt in dB/octave, pivoting at 1 kHz; 0 for none.
+    pub tilt: f64,
     pub filters: Vec<Filter>,
 }
 
@@ -20,8 +23,14 @@ pub struct Preset {
 struct PresetFile {
     format: u32,
     name: String,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    tilt: f64,
     #[serde(default, rename = "filter")]
     filters: Vec<Filter>,
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -50,11 +59,16 @@ impl Preset {
             return Err(PresetError::NewerFormat(version.format));
         }
         let file: PresetFile = toml::from_str(text)?;
-        Ok(Preset { name: file.name, filters: file.filters.into_iter().map(Filter::clamped).collect() })
+        Ok(Preset {
+            name: file.name,
+            tilt: clamp_tilt(file.tilt),
+            filters: file.filters.into_iter().map(Filter::clamped).collect(),
+        })
     }
 
     pub fn to_toml(&self) -> String {
-        let file = PresetFile { format: FORMAT_VERSION, name: self.name.clone(), filters: self.filters.clone() };
+        let file =
+            PresetFile { format: FORMAT_VERSION, name: self.name.clone(), tilt: self.tilt, filters: self.filters.clone() };
         toml::to_string(&file).expect("presets always serialize")
     }
 
@@ -262,6 +276,7 @@ mod tests {
     fn sample() -> Preset {
         Preset {
             name: "Sundara resonances".into(),
+            tilt: -0.5,
             filters: vec![
                 Filter { kind: FilterType::Bell, channel: Channel::L, frequency: 6150.0, gain: -4.2, q: 6.5, enabled: true },
                 Filter { kind: FilterType::HighShelf, channel: Channel::LR, frequency: 9000.0, gain: 2.0, q: 0.7, enabled: false },
@@ -288,6 +303,10 @@ future_key = 3
 "#;
         let parsed = Preset::parse(doc).unwrap();
         assert_eq!(parsed.filters[0].kind, FilterType::Bell);
+        assert_eq!(parsed.tilt, 0.0);
+        assert!(!Preset { tilt: 0.0, ..p.clone() }.to_toml().contains("tilt"));
+        let tilted = Preset::parse("format = 1\nname = \"x\"\ntilt = -9.0").unwrap();
+        assert_eq!(tilted.tilt, crate::tilt::MIN_TILT);
         assert!(matches!(Preset::parse("format = 2\nname = \"x\""), Err(PresetError::NewerFormat(2))));
     }
 

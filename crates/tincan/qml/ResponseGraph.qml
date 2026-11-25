@@ -7,7 +7,7 @@ Item {
     id: root
 
     property var frequencies: []
-    // { same, left, right, filters: [curve per filter] (optional) }
+    // { same, left, right, filters: [curve per filter] (optional), tilt: curve (optional) }
     property var curves: null
     // Filters for the dots (editable mode only), and each one's color index.
     property var filters: []
@@ -27,8 +27,9 @@ Item {
     signal qScrolled(int index, real steps, bool fine)
     signal dragFinished()
 
-    // Gain axis half-range in dB: fits the curves and dots, never less than 12 dB.
-    property real range: 12
+    // Gain axis half-range in dB: at least 6, extended in 3 dB steps to fit the curves and dots
+    // with 1 dB to spare.
+    property real range: 6
     readonly property real leftMargin: 40
     readonly property real bottomMargin: 20
     readonly property real topMargin: 8
@@ -49,10 +50,11 @@ Item {
             scan(curves.right);
             if (curves.filters)
                 for (var j = 0; j < curves.filters.length; j++) scan(curves.filters[j]);
+            scan(curves.tilt);
         }
         for (var k = 0; k < filters.length; k++)
             m = Math.max(m, Math.abs(filters[k].gain));
-        range = Math.max(12, Math.ceil((m + 1) / 6) * 6);
+        range = Math.max(6, Math.ceil((m + 1) / 3) * 3);
     }
 
     onCurvesChanged: { updateRange(); canvas.requestPaint(); }
@@ -66,6 +68,8 @@ Item {
     function fOf(x) { return 20 * Math.pow(1000, (x - leftMargin) / plotWidth); }
     function yOf(g) { return topMargin + plotHeight / 2 - g / range * plotHeight / 2; }
     function gOf(y) { return (topMargin + plotHeight / 2 - y) / (plotHeight / 2) * range; }
+    // Keeps far off-scale values near the plot, where the clip hides them.
+    function clampOver(g) { return Math.max(-range * 1.2, Math.min(range * 1.2, g)); }
 
     function colorOf(i) { return P.filterColor(colors[i] !== undefined ? colors[i] : i); }
 
@@ -113,7 +117,8 @@ Item {
                 }
             var step = root.range <= 12 ? 3 : 6;
             ctx.textAlign = "right";
-            for (var g = -root.range; g <= root.range; g += step) {
+            // Lines on multiples of the step, so 0 dB always has one.
+            for (var g = -Math.floor(root.range / step) * step; g <= root.range; g += step) {
                 var y = Math.round(root.yOf(g)) + 0.5;
                 ctx.strokeStyle = g === 0 ? Qt.alpha(pal.text, 0.35) : gridColor;
                 ctx.beginPath(); ctx.moveTo(root.leftMargin, y); ctx.lineTo(root.leftMargin + root.plotWidth, y); ctx.stroke();
@@ -128,7 +133,7 @@ Item {
                 ctx.beginPath();
                 ctx.moveTo(root.xOf(freqs[0]), root.yOf(0));
                 for (var i = 0; i < curve.length; i++)
-                    ctx.lineTo(root.xOf(freqs[i]), root.yOf(Math.max(-root.range * 1.2, Math.min(root.range * 1.2, curve[i]))));
+                    ctx.lineTo(root.xOf(freqs[i]), root.yOf(root.clampOver(curve[i])));
                 ctx.lineTo(root.xOf(freqs[freqs.length - 1]), root.yOf(0));
                 ctx.closePath();
                 ctx.fill();
@@ -139,7 +144,7 @@ Item {
                 ctx.lineWidth = lineWidth;
                 ctx.beginPath();
                 for (var i = 0; i < curve.length; i++) {
-                    var px = root.xOf(freqs[i]), py = root.yOf(Math.max(-root.range * 1.2, Math.min(root.range * 1.2, curve[i])));
+                    var px = root.xOf(freqs[i]), py = root.yOf(root.clampOver(curve[i]));
                     if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
                 }
                 ctx.stroke();
@@ -159,6 +164,11 @@ Item {
                         plot(c.filters[fi], Qt.alpha(root.colorOf(fi), on ? [0.5, 0.75, 0.9][emphasis] : 0.15),
                              [1.25, 1.75, 2][emphasis]);
                     }
+                if (c.tilt) {
+                    ctx.setLineDash([5, 4]);
+                    plot(c.tilt, Qt.alpha(pal.text, 0.55), 1.5);
+                    ctx.setLineDash([]);
+                }
                 if (c.same) {
                     plot(c.left, pal.text, 2.5);
                 } else {

@@ -9,7 +9,7 @@ ApplicationWindow {
 
     required property var app
     property string presetId
-    property var st: ({ name: "", loaded: false, active: false, dirty: false, isNew: false, filters: [], colors: [], curves: null })
+    property var st: ({ name: "", loaded: false, active: false, dirty: false, isNew: false, tilt: 0, filters: [], colors: [], curves: null })
     property int selectedIndex: -1
     // Filter whose box is hovered, highlighted on the graph.
     property int boxHoverIndex: -1
@@ -209,6 +209,21 @@ ApplicationWindow {
                 text: "Sort by frequency"
                 enabled: win.st.filters.length > 1
                 onClicked: { app.sortFilters(win.presetId); win.selectedIndex = -1; }
+            }
+            // The preset's tilt: a constant slope across the whole band, pivoting at 1 kHz.
+            Label {
+                Layout.leftMargin: 12
+                text: "Tilt"
+                HoverHandler { id: tiltHover }
+                ToolTip.visible: tiltHover.hovered
+                ToolTip.delay: 800
+                ToolTip.text: "A constant slope across the whole band, leaving 1 kHz unchanged. Negative is darker."
+            }
+            NumberField {
+                kind: "tilt"
+                unit: "dB/oct"
+                value: win.st.tilt
+                onEdited: (v) => app.setTilt(win.presetId, v)
             }
             Label {
                 Layout.fillWidth: true

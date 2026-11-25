@@ -24,6 +24,7 @@ function defaultQ(kind) {
 var minFrequency = 20, maxFrequency = 20000;
 var minGain = -24, maxGain = 24;
 var minQ = 0.1, maxQ = 40;
+var minTilt = -3, maxTilt = 3;
 
 function clamp(v, lo, hi) {
     return Math.min(hi, Math.max(lo, v));
@@ -52,9 +53,10 @@ function snapTo(value, target, inc) {
 // constant ratio (frequency, Q) or amount (gain), landing on a round value: a multiple of
 // the 1-2-5 increment nearest the step size.
 function stepValue(kind, value, steps, fine) {
-    if (kind === "gain") {
+    if (kind === "gain" || kind === "tilt") {
         var inc = fine ? 0.01 : 0.1;
-        return clamp(snapTo(value, value + steps * inc, inc), minGain, maxGain);
+        var r0 = snapTo(value, value + steps * inc, inc);
+        return kind === "gain" ? clamp(r0, minGain, maxGain) : clamp(r0, minTilt, maxTilt);
     }
     var ratio = kind === "frequency" ? Math.pow(2, steps / (fine ? 96 : 24))
                                      : Math.pow(fine ? 1.01 : 1.05, steps);
@@ -69,15 +71,16 @@ function formatValue(kind, v) {
             return (v / 1000).toFixed(v >= 10000 ? 2 : 3).replace(/\.?0+$/, "") + "k";
         return v.toFixed(v >= 100 ? 0 : 1).replace(/\.0$/, "");
     }
-    if (kind === "gain")
+    if (kind === "gain" || kind === "tilt")
         return v.toFixed(2);
     // Q: up to three decimals, trailing zeros dropped down to one ("0.707", "0.75", "2.0").
     return v.toFixed(v >= 10 ? 2 : 3).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, ".0");
 }
 
-// Parses user input such as "1.2k", "6150" or "6150 Hz". Returns NaN when invalid.
+// Parses user input such as "1.2k", "6150", "6150 Hz" or "-1 dB/oct". Returns NaN when
+// invalid.
 function parseValue(kind, text) {
-    var t = text.trim().toLowerCase().replace(/hz$|db$/, "").trim();
+    var t = text.trim().toLowerCase().replace(/hz$|db(\s*\/\s*oct(ave)?)?$/, "").trim();
     var mult = 1;
     if (kind === "frequency" && t.endsWith("k")) {
         mult = 1000;
@@ -90,6 +93,8 @@ function parseValue(kind, text) {
         return clamp(v, minFrequency, maxFrequency);
     if (kind === "gain")
         return clamp(v, minGain, maxGain);
+    if (kind === "tilt")
+        return clamp(v, minTilt, maxTilt);
     return clamp(v, minQ, maxQ);
 }
 
