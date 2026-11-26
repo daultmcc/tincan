@@ -1,16 +1,23 @@
 .pragma library
 
 // Filter colours, chosen to stay distinct on light and dark backgrounds. The first several
-// stay clear of the channel colours (blue and red, below); those hues come last.
-var filterColors = ["#3cb44b", "#f032e6", "#c09a00", "#469990", "#911eb4", "#f58231",
-                    "#42d4f4", "#9a6324", "#e6194b", "#4363d8"];
+// stay clear of the channel colours (blue and orange, below); those hues come last.
+var filterColors = ["#3cb44b", "#f032e6", "#c09a00", "#469990", "#911eb4", "#e6194b",
+                    "#42d4f4", "#9a6324", "#4363d8", "#f58231"];
 
 function filterColor(index) {
     return filterColors[index % filterColors.length];
 }
 
-var leftColor = "#3a8fd8";
-var rightColor = "#e0645a";
+// Channel colors for split L and R curves: complementary blue and orange, which blend where
+// the curves overlap. On dark themes the curves are added, and these sum to white in every
+// component; on light themes they are multiplied, and these multiply to dark grey (0.2).
+var darkChannelColors = ["#3a8fd8", "#d8833a"];
+var lightChannelColors = ["#4080e6", "#cc6638"];
+
+function channelColors(dark) {
+    return dark ? darkChannelColors : lightChannelColors;
+}
 
 var kinds = ["bell", "high_shelf", "low_shelf"];
 var kindLabels = ["Bell", "High shelf", "Low shelf"];

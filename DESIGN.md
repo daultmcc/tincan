@@ -321,7 +321,13 @@ The output device selection drop down, pass-through toggle, A/B selector (two bu
 and "B", see A/B comparison), preamp controls (mode and value), and headroom/clip indicators
 are in a bar at the top of the window. Below that is the
 frequency response graph, showing the combined response of all active loaded presets
-(excluding the preamp), with separate L and R curves when they differ. Further down is a
+(excluding the preamp), with separate L and R curves when they differ. These are drawn in
+complementary colors (blue and orange) that blend with each other, but not with the rest of
+the graph, where they overlap: added on dark themes, where they sum to white, and multiplied
+on light themes, where they make dark grey. Each curve, including the single one when the
+channels match, has a faint halo that fades out away from the line; on split curves the halos
+blend the same way, which softens the change where the curves meet or part. The graph follows
+theme changes while running. Further down is a
 list of all presets loaded in the current A/B list (titled e.g. "Loaded presets (A)"), each of which has an individual pass-through toggle
 and a button to unload the preset entirely. Double-clicking a preset opens it in an edit
 window. There's

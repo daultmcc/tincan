@@ -166,7 +166,7 @@ pub mod qobject {
 use qobject::AppController;
 
 /// Number of points in plotted curves.
-const PLOT_POINTS: usize = 400;
+const PLOT_POINTS: usize = 800;
 /// How long the clip indicator stays lit.
 const CLIP_HOLD: Duration = Duration::from_secs(3);
 /// How often the presets folder is checked for changes made by other programs.

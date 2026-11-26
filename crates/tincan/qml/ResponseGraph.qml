@@ -57,11 +57,54 @@ Item {
         range = Math.max(6, Math.ceil((m + 1) / 3) * 3);
     }
 
-    onCurvesChanged: { updateRange(); canvas.requestPaint(); }
-    onFiltersChanged: { updateRange(); canvas.requestPaint(); }
-    onSelectedIndexChanged: canvas.requestPaint()
-    onHighlightIndexChanged: canvas.requestPaint()
-    onRangeChanged: canvas.requestPaint()
+    function repaint() {
+        canvas.requestPaint();
+        leftCanvas.requestPaint();
+        rightCanvas.requestPaint();
+        overlay.requestPaint();
+    }
+
+    readonly property bool darkTheme: palette.base.hslLightness < 0.5
+    readonly property var channelColors: P.channelColors(darkTheme)
+
+    // Clip `ctx` to the plot area.
+    function clipToPlot(ctx) {
+        ctx.beginPath();
+        ctx.rect(leftMargin, topMargin, plotWidth, plotHeight);
+        ctx.clip();
+    }
+
+    function plotCurve(ctx, curve, color, lineWidth) {
+        if (!curve || curve.length !== frequencies.length) return;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = lineWidth;
+        // Round joins, so wide strokes (such as halos) never spike out at a corner, as the
+        // default miter joins do.
+        ctx.lineJoin = "round";
+        // Quadratic segments between the midpoints of the polyline, with the points as control
+        // points, so the path is smooth. Drawn as a polyline, with a join every few pixels, the
+        // stroke's edges come out notched and speckled.
+        var n = curve.length;
+        var xs = [], ys = [];
+        for (var i = 0; i < n; i++) {
+            xs.push(xOf(frequencies[i]));
+            ys.push(yOf(clampOver(curve[i])));
+        }
+        ctx.beginPath();
+        ctx.moveTo(xs[0], ys[0]);
+        for (var j = 1; j < n - 1; j++)
+            ctx.quadraticCurveTo(xs[j], ys[j], (xs[j] + xs[j + 1]) / 2, (ys[j] + ys[j + 1]) / 2);
+        ctx.lineTo(xs[n - 1], ys[n - 1]);
+        ctx.stroke();
+    }
+
+    onCurvesChanged: { updateRange(); repaint(); }
+    onFiltersChanged: { updateRange(); repaint(); }
+    onSelectedIndexChanged: repaint()
+    onHighlightIndexChanged: repaint()
+    onRangeChanged: repaint()
+    // The canvas only redraws on request, so follow theme changes explicitly.
+    onPaletteChanged: repaint()
     onDraggingChanged: if (!dragging) updateRange()
 
     function xOf(f) { return leftMargin + Math.log(f / 20) / Math.log(1000) * plotWidth; }
@@ -85,7 +128,10 @@ Item {
     Canvas {
         id: canvas
         anchors.fill: parent
-        renderTarget: Canvas.FramebufferObject
+        // All the canvases render to images, with the raster paint engine, which antialiases
+        // with exact pixel coverage. FramebufferObject uses the OpenGL paint engine, whose few
+        // samples per pixel leave the edges of shallow slopes ragged.
+        renderTarget: Canvas.Image
         onPaint: {
             var ctx = getContext("2d");
             ctx.reset();
@@ -138,22 +184,10 @@ Item {
                 ctx.closePath();
                 ctx.fill();
             }
-            function plot(curve, color, lineWidth) {
-                if (!curve || curve.length !== freqs.length) return;
-                ctx.strokeStyle = color;
-                ctx.lineWidth = lineWidth;
-                ctx.beginPath();
-                for (var i = 0; i < curve.length; i++) {
-                    var px = root.xOf(freqs[i]), py = root.yOf(root.clampOver(curve[i]));
-                    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-                }
-                ctx.stroke();
-            }
+            function plot(curve, color, lineWidth) { root.plotCurve(ctx, curve, color, lineWidth); }
 
             ctx.save();
-            ctx.beginPath();
-            ctx.rect(root.leftMargin, root.topMargin, root.plotWidth, root.plotHeight);
-            ctx.clip();
+            root.clipToPlot(ctx);
             var c = root.curves;
             if (c) {
                 if (c.filters)
@@ -169,21 +203,93 @@ Item {
                     plot(c.tilt, Qt.alpha(pal.text, 0.55), 1.5);
                     ctx.setLineDash([]);
                 }
-                if (c.same) {
-                    plot(c.left, pal.text, 2.5);
-                } else {
-                    plot(c.left, P.leftColor, 2.5);
-                    plot(c.right, P.rightColor, 2.5);
-                }
             }
             ctx.restore();
+        }
+    }
 
+    // The response curves, each with a halo that fades out away from the line. When the channels
+    // match there is one curve, in the text color, on the left layer. Otherwise L and R are each
+    // drawn normally on a transparent layer of their own, and the two layers are then blended
+    // with each other only: added on dark themes, where their colors sum to white, and
+    // multiplied on light ones, where they multiply to dark grey. The result is drawn normally
+    // over the graph. The halos blend the same way as the lines, which softens the change where
+    // the curves meet or part. The blend is a shader over both layers at full device
+    // resolution, so it stays sharp at any display scale.
+    component ChannelCanvas: Canvas {
+        // Index into root.channelColors and curve key: 0 = left, 1 = right.
+        property int channel
+        anchors.fill: parent
+        renderTarget: Canvas.Image
+
+        readonly property real lineWidth: 2.5
+        // The halo's opacity falls off as a Gaussian of the distance from the line's edge:
+        // haloOpacity at the edge, with standard deviation haloSigma in pixels. It is drawn out
+        // to 3 sigma (about 1% of the peak), in haloSteps strokes.
+        readonly property real haloOpacity: 0.35
+        readonly property real haloSigma: 1.5
+        readonly property int haloSteps: 12
+        readonly property real haloReach: 3 * haloSigma
+        // Alpha of each stroke, widest last. Stroke k reaches haloReach * k / haloSteps beyond
+        // the edge, so the band between strokes k - 1 and k is covered by strokes k and up;
+        // their alphas are chosen so the opacity there, 1 - Π(1 - alpha), equals the Gaussian
+        // at the band's middle.
+        readonly property var haloAlphas: {
+            var alphas = [], outer = 1;  // 1 - opacity of strokes k + 1 and up
+            for (var k = haloSteps; k >= 1; k--) {
+                var d = haloReach * (k - 0.5) / haloSteps;
+                var inner = 1 - haloOpacity * Math.exp(-d * d / (2 * haloSigma * haloSigma));
+                alphas[k - 1] = 1 - inner / outer;
+                outer = inner;
+            }
+            return alphas;
+        }
+
+        onPaint: {
+            var ctx = getContext("2d");
+            ctx.reset();
+            var c = root.curves;
+            if (!c || (c.same && channel === 1)) return;
+            var curve = channel === 0 ? c.left : c.right;
+            var color = c.same ? root.palette.text : root.channelColors[channel];
+            ctx.save();
+            root.clipToPlot(ctx);
+            for (var k = haloSteps; k >= 1; k--)
+                root.plotCurve(ctx, curve, Qt.alpha(color, haloAlphas[k - 1]),
+                               lineWidth + 2 * haloReach * k / haloSteps);
+            root.plotCurve(ctx, curve, color, lineWidth);
+            ctx.restore();
+        }
+    }
+
+    ChannelCanvas { id: leftCanvas; channel: 0 }
+    ChannelCanvas { id: rightCanvas; channel: 1 }
+
+    ShaderEffect {
+        anchors.fill: parent
+        visible: !!root.curves
+        property var leftLayer: ShaderEffectSource { sourceItem: leftCanvas; hideSource: true }
+        property var rightLayer: ShaderEffectSource { sourceItem: rightCanvas; hideSource: true }
+        property real multiply: root.darkTheme ? 0 : 1
+        fragmentShader: "qrc:/qt/qml/org/tincan/shaders/channelblend.frag.qsb"
+    }
+
+    // Channel labels and the filter dots, above the curves.
+    Canvas {
+        id: overlay
+        anchors.fill: parent
+        renderTarget: Canvas.Image
+        onPaint: {
+            var ctx = getContext("2d");
+            ctx.reset();
+            var pal = root.palette;
+            var c = root.curves;
             if (c && !c.same) {
                 ctx.textAlign = "left";
                 ctx.font = "bold 11px sans-serif";
-                ctx.fillStyle = P.leftColor;
+                ctx.fillStyle = root.channelColors[0];
                 ctx.fillText("L", root.leftMargin + 8, root.topMargin + 14);
-                ctx.fillStyle = P.rightColor;
+                ctx.fillStyle = root.channelColors[1];
                 ctx.fillText("R", root.leftMargin + 20, root.topMargin + 14);
             }
 
@@ -238,8 +344,8 @@ Item {
 
     Connections {
         target: root
-        function onWidthChanged() { canvas.requestPaint(); }
-        function onHeightChanged() { canvas.requestPaint(); }
+        function onWidthChanged() { repaint(); }
+        function onHeightChanged() { repaint(); }
     }
 
     MouseArea {

@@ -5,8 +5,8 @@ See [DESIGN.md](DESIGN.md).
 
 ## Building
 
-Requires Rust (2024 edition), Qt 6 (base, declarative, svg) and PipeWire development files
-(`libpipewire-0.3`), plus clang for bindgen.
+Requires Rust (2024 edition), Qt 6 (base, declarative, svg, and shadertools to compile the
+graph's blend shader) and PipeWire development files (`libpipewire-0.3`), plus clang for bindgen.
 
 ```sh
 cargo build --release

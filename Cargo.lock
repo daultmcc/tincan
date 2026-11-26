@@ -890,6 +890,7 @@ dependencies = [
  "cxx-qt",
  "cxx-qt-build",
  "cxx-qt-lib",
+ "qt-build-utils",
  "serde_json",
  "signal-hook",
  "tincan-audio",

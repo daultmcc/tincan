@@ -14,3 +14,4 @@ tincan-core = { version = "0.1.0", path = "../tincan-core" }
 
 [build-dependencies]
 cxx-qt-build = "0.10"
+qt-build-utils = "0.10"
